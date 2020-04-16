@@ -33,8 +33,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include "picotypes.h"
+#include "bpf_loader.h"
 #include "picotls.h"
 #include "picotcpls.h"
+
 
 /** Forward declarations */
 static ptls_tcpls_t* tcpls_init_context(ptls_t *ptls, const void *data, size_t datalen,
@@ -309,6 +311,8 @@ static int setlocal_usertimeout(ptls_t *ptls, ptls_tcpls_t *option) {
 
 
 static int setlocal_bpf_sched(ptls_t *ptls, ptls_tcpls_t *option) {
+  //int err = -1;
+  //err = load_bpf_prog("a", "c");	
   return 0;
 }
 

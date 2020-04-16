@@ -12,13 +12,18 @@ IF (WITH_DTRACE)
     MESSAGE(STATUS "Enabling USDT support")
 ENDIF ()
 
-SET(CMAKE_C_FLAGS "-std=c99 -Wall -g ${CC_WARNING_FLAGS} ${CMAKE_C_FLAGS}")
+SET(CMAKE_C_FLAGS "-std=c99 -Wall -g -lbpf -lz -DHAVE_ATTR_TEST=0 ${CC_WARNING_FLAGS} ${CMAKE_C_FLAGS}")
 INCLUDE_DIRECTORIES(
     deps/cifra/src/ext
     deps/cifra/src
     deps/micro-ecc
     deps/picotest
     include
+    lib/bpf/samples/bpf
+    lib/bpf/tools/perf 
+    lib/bpf/tools/include
+    lib/bpf/include/uapi
+    lib/bpf/include
     ${CMAKE_CURRENT_BINARY_DIR})
 SET(MINICRYPTO_LIBRARY_FILES
     deps/micro-ecc/uECC.c
@@ -35,7 +40,11 @@ SET(MINICRYPTO_LIBRARY_FILES
     deps/cifra/src/poly1305.c
     deps/cifra/src/sha256.c
     deps/cifra/src/sha512.c)
+
+
 SET(CORE_FILES
+    lib/bpf/loader.c
+    lib/bpf/bpf_load.c
     lib/picotls.c
     lib/picotcpls.c
     lib/pembase64.c)
@@ -62,6 +71,7 @@ IF (BROTLI_DEC_FOUND AND BROTLI_ENC_FOUND)
         lib/certificate_compression.c)
     LIST(APPEND CORE_EXTRA_LIBS ${BROTLI_DEC_LIBRARIES} ${BROTLI_ENC_LIBRARIES})
 ENDIF ()
+
 
 ADD_LIBRARY(picotls-core ${CORE_FILES})
 TARGET_LINK_LIBRARIES(picotls-core ${CORE_EXTRA_LIBS})

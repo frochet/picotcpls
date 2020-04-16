@@ -28,6 +28,7 @@
 #include "picotypes.h"
 #include "picotls.h"
 #include "picotcpls.h"
+#include "bpf_loader.h"
 #include "picotls/ffx.h"
 #include "picotls/minicrypto.h"
 #include "picotls/pembase64.h"
@@ -1236,7 +1237,8 @@ static void test_sends_varlen_bpf_prog(void)
   consumed = sbuf.off; 
   ret = ptls_receive(client, &decbuf, sbuf.base, &consumed);
   ok(ret == 0);
-
+  //ret = load_bpf_prog("a", "b");
+  //ok(ret == 0);
 }
 
 
