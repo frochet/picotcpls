@@ -37,6 +37,8 @@
 #include "picotls/openssl.h"
 #include <openssl/opensslv.h>
 
+#include "../lib/bpf/loader.c"
+
 #ifdef _WINDOWS
 #include <bcrypt.h>
 #include "picotls/ptlsbcrypt.h"
