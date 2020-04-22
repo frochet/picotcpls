@@ -1,3 +1,5 @@
+/* inpired from linux/tools/bpftool/prog.c*/
+
 #include "bpf_load.h"
 #include "bpf_insn.h"
 #include <errno.h>
@@ -13,6 +15,7 @@
 #include <sys/vfs.h>
 #include <linux/magic.h>
 #include "bpf_loader.h"
+
 
 
 
@@ -139,7 +142,7 @@ out_free:
 }
 
 
-int load_bpf_prog(const char *bpf_file, const char *bpf_fs_pinfile){
+int load_bpf_prog(ptls_tcpls_t *option, const char *bpf_fs_pinfile){
 	enum bpf_prog_type common_prog_type = BPF_PROG_TYPE_UNSPEC;
 	int err;
 	struct bpf_object *obj;
@@ -150,9 +153,10 @@ int load_bpf_prog(const char *bpf_file, const char *bpf_fs_pinfile){
 	DECLARE_LIBBPF_OPTS(bpf_object_open_opts, open_opts,
 		.relaxed_maps = true,
 	);
-	obj = bpf_object__open_file(bpf_file, &open_opts);
+	obj = bpf_object__open_mem(option->data->base, 
+			option->data->len, &open_opts);
 	if (!obj) {
-		perror("failed to open object file");
+		perror("failed to open object");
 		return -1;
 	}
 
@@ -162,7 +166,9 @@ int load_bpf_prog(const char *bpf_file, const char *bpf_fs_pinfile){
 
 		err = get_prog_type_by_name(sec_name, &prog_type,
 						    &expected_attach_type);
-		printf("%s %d\n", sec_name, prog_type);
+		if(err<0)
+			goto err_close_obj;
+
 		bpf_program__set_ifindex(pos, ifindex);
 		bpf_program__set_type(pos, prog_type);
 		bpf_program__set_expected_attach_type(pos, expected_attach_type);
@@ -175,22 +181,25 @@ int load_bpf_prog(const char *bpf_file, const char *bpf_fs_pinfile){
 	err = bpf_object__load_xattr(&load_attr);
 	if (err) {
 		perror("failed to load object file");
-		return -1;
+		goto err_close_obj;
 	}
 
 	err = mount_bpffs_for_pin(bpf_fs_pinfile);
 	if (err)
-		return -1;
+		goto err_close_obj;
 
 	err = bpf_object__pin_programs(obj, bpf_fs_pinfile);
 	 if (err) {
 		perror("failed to pin all programs");
-		return -1;
+		goto err_close_obj;
 	}
+
+err_close_obj:
+	bpf_object__close(obj);
 	return err;
 }
 
-int register_struct_ops(const char *bpf_file){
+int register_struct_ops(ptls_tcpls_t *option){
 	const struct bpf_map_def *def;
 	struct bpf_map_info info = {};
 	__u32 info_len = sizeof(info);
@@ -198,7 +207,11 @@ int register_struct_ops(const char *bpf_file){
 	struct bpf_link *link;
 	struct bpf_map *map;
 	struct bpf_object *obj;
-	obj = bpf_object__open(bpf_file);
+	DECLARE_LIBBPF_OPTS(bpf_object_open_opts, open_opts,
+		.relaxed_maps = true,
+	);
+	obj = bpf_object__open_mem(option->data->base, 
+			option->data->len, &open_opts);
 	if (!obj) {
 		perror("failed to open object file");
 		return -1;
@@ -246,10 +259,10 @@ int register_struct_ops(const char *bpf_file){
 		return -1;
 
 	if (!nr_maps) {
-		printf("no struct_ops found in %s", bpf_file);
+		perror("no struct_ops found in");
 		return -1;
 	}
-
+	btf__free(btf_vmlinux);
 	return 0;
 }
 

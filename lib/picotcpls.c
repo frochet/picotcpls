@@ -32,6 +32,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <netinet/tcp.h>
+#include <netinet/in.h>
 #include "picotypes.h"
 #include "bpf_loader.h"
 #include "picotls.h"
@@ -311,9 +313,23 @@ static int setlocal_usertimeout(ptls_t *ptls, ptls_tcpls_t *option) {
 
 
 static int setlocal_bpf_sched(ptls_t *ptls, ptls_tcpls_t *option) {
-  //int err = -1;
-  //err = load_bpf_prog("a", "c");	
-  return 0;
+  int err = -1;
+  static int f = 0;
+  if(option->type!=BPF_CC)
+    return err;
+  if(option->setlocal || option->settopeer){
+    char pin_path [20]; 
+    sprintf(pin_path, "%s%d", BPF_FOLDER, ++f);
+    err = load_bpf_prog(option, pin_path);
+    if(err)
+       return err;
+    err = register_struct_ops(option);
+    if(err)
+      return err;
+    err = setsockopt(option->sd, IPPROTO_TCP, TCP_CONGESTION, 
+                                     option->cc , option->cc_len);
+  }	
+  return err;
 }
 
 

@@ -1227,18 +1227,19 @@ static void test_sends_varlen_bpf_prog(void)
   
   ptls_buffer_init(&decbuf, "", 0);
   ptls_buffer_dispose(&sbuf);
-  uint8_t input[50000];
-  memset(input, 0, 50000);
-  ptls_buffer_init(&sbuf, input, 50000);
-  ret = ptls_set_bpf_cc(server, input, 50000, 1, 1);
+  FILE *f = fopen("bpf_cubic.o", "r");
+  ok(f!=NULL);
+  uint8_t input[60000];
+  //memset(input, 0, 50000);
+  fread(input, 1, 60000, f);
+  ptls_buffer_init(&sbuf, input, 60000);
+  ret = ptls_set_bpf_cc(server, input, 60000, 1, 1);
   ok(ret == 0);
   ret = ptls_send_tcpoption(server, &sbuf, BPF_CC);
   ok(ret == 0);
   consumed = sbuf.off; 
   ret = ptls_receive(client, &decbuf, sbuf.base, &consumed);
   ok(ret == 0);
-  //ret = load_bpf_prog("a", "b");
-  //ok(ret == 0);
 }
 
 
