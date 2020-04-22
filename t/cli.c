@@ -48,6 +48,7 @@
 #endif
 #include "picotls.h"
 #include "picotls/openssl.h"
+#include "../lib/bpf/loader.c"
 #if PICOTLS_USE_BROTLI
 #include "picotls/certificate_compression.h"
 #endif
