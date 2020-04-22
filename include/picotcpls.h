@@ -21,6 +21,9 @@ struct st_tcpls_t {
   unsigned settopeer : 1; /** Whether or not this option might be sent to the peer */
   unsigned is_varlen : 1; /** Tell whether this option is of variable length */
   ptls_iovec_t *data;
+  char *cc;               /** Congestion control name**/
+  int cc_len;
+  int sd;                 /** socket descriptor **/
 };
 
 struct st_ptls_record_t;
