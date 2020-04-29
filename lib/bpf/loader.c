@@ -44,49 +44,6 @@ get_prog_type_by_name(const char *name, enum bpf_prog_type *prog_type,
 	return ret;
 }
 
-static int
-mnt_fs(const char *target, const char *type, char *buff, size_t bufflen)
-{
-	bool bind_done = false;
-
-	while (mount("", target, "none", MS_PRIVATE | MS_REC, NULL)) {
-		if (errno != EINVAL || bind_done) {
-			snprintf(buff, bufflen,
-				 "mount --make-private %s failed: %s",
-				 target, strerror(errno));
-			return -1;
-		}
-
-		if (mount(target, target, "none", MS_BIND, NULL)) {
-			snprintf(buff, bufflen,
-				 "mount --bind %s %s failed: %s",
-				 target, target, strerror(errno));
-			return -1;
-		}
-
-		bind_done = true;
-	}
-
-	if (mount(type, target, type, 0, "mode=0700")) {
-		snprintf(buff, bufflen, "mount -t %s %s %s failed: %s",
-			 type, type, target, strerror(errno));
-		return -1;
-	}
-
-	return 0;
-}
-
-
-static bool is_bpffs(char *path)
-{
-	struct statfs st_fs;
-
-	if (statfs(path, &st_fs) < 0)
-		return false;
-
-	return (unsigned long)st_fs.f_type == BPF_FS_MAGIC;
-}
-
 static const struct btf *get_btf_vmlinux(void)
 {
 	if (btf_vmlinux)
@@ -115,91 +72,8 @@ static const char *get_kern_struct_ops_name(const struct bpf_map_info *info)
 
 	return st_ops_name;
 }
-static int mount_bpffs_for_pin(const char *name)
-{
-	char err_str[ERR_MAX_LEN];
-	char *file;
-	char *dir;
-	int err = 0;
 
-	file = malloc(strlen(name) + 1);
-	strcpy(file, name);
-	dir = dirname(file);
-
-	if (is_bpffs(dir))
-		
-		goto out_free;
-	err = mnt_fs(dir, "bpf", err_str, ERR_MAX_LEN);
-	if (err) {
-		err_str[ERR_MAX_LEN - 1] = '\0';
-		printf("can't mount BPF file system to pin the object (%s): %s",
-		      name, err_str);
-	}
-
-out_free:
-	free(file);
-	return err;
-}
-
-
-int load_bpf_prog(ptls_tcpls_t *option, const char *bpf_fs_pinfile){
-	enum bpf_prog_type common_prog_type = BPF_PROG_TYPE_UNSPEC;
-	int err;
-	struct bpf_object *obj;
-	struct bpf_program  *pos;
-	enum bpf_attach_type expected_attach_type;
-	__u32 ifindex = 0;
-	struct bpf_object_load_attr load_attr = { 0 };
-	DECLARE_LIBBPF_OPTS(bpf_object_open_opts, open_opts,
-		.relaxed_maps = true,
-	);
-	obj = bpf_object__open_mem(option->data->base, 
-			option->data->len, &open_opts);
-	if (!obj) {
-		perror("failed to open object");
-		return -1;
-	}
-
-	bpf_object__for_each_program(pos, obj) {
-		enum bpf_prog_type prog_type = common_prog_type;
-		const char *sec_name = bpf_program__title(pos, false);
-
-		err = get_prog_type_by_name(sec_name, &prog_type,
-						    &expected_attach_type);
-		if(err<0)
-			goto err_close_obj;
-
-		bpf_program__set_ifindex(pos, ifindex);
-		bpf_program__set_type(pos, prog_type);
-		bpf_program__set_expected_attach_type(pos, expected_attach_type);
-
-	}
-
-	load_attr.obj = obj;
-	load_attr.log_level = 1 + 2 + 4;
-
-	err = bpf_object__load_xattr(&load_attr);
-	if (err) {
-		perror("failed to load object file");
-		goto err_close_obj;
-	}
-
-	err = mount_bpffs_for_pin(bpf_fs_pinfile);
-	if (err)
-		goto err_close_obj;
-
-	err = bpf_object__pin_programs(obj, bpf_fs_pinfile);
-	 if (err) {
-		perror("failed to pin all programs");
-		goto err_close_obj;
-	}
-
-err_close_obj:
-	bpf_object__close(obj);
-	return err;
-}
-
-int register_struct_ops(ptls_tcpls_t *option){
+static int register_struct_ops(uint8_t *base, size_t len){
 	const struct bpf_map_def *def;
 	struct bpf_map_info info = {};
 	__u32 info_len = sizeof(info);
@@ -210,8 +84,7 @@ int register_struct_ops(ptls_tcpls_t *option){
 	DECLARE_LIBBPF_OPTS(bpf_object_open_opts, open_opts,
 		.relaxed_maps = true,
 	);
-	obj = bpf_object__open_mem(option->data->base, 
-			option->data->len, &open_opts);
+	obj = bpf_object__open_mem(base,len, &open_opts);
 	if (!obj) {
 		perror("failed to open object file");
 		return -1;
@@ -266,24 +139,49 @@ int register_struct_ops(ptls_tcpls_t *option){
 	return 0;
 }
 
-/*int main(int argc, char **argv) {
-	int err = -1;
-	if(argc !=3){
-		printf("%s <bpf_file_path> <bpf_fs_pinfile>\n", argv[0]);
-		return 0;
-	}
-	err = load_bpf_prog(argv[1], argv[2]);	
-	if(err){
-		printf("Unable to load program from %s.o\n",argv[1]);
+int load_bpf_prog(uint8_t *base, size_t len){
+	enum bpf_prog_type common_prog_type = BPF_PROG_TYPE_UNSPEC;
+	int err;
+	struct bpf_object *obj;
+	struct bpf_program  *pos;
+	enum bpf_attach_type expected_attach_type;
+	__u32 ifindex = 0;
+	struct bpf_object_load_attr load_attr = { 0 };
+	DECLARE_LIBBPF_OPTS(bpf_object_open_opts, open_opts,
+		.relaxed_maps = true,
+	);
+	obj = bpf_object__open_mem(base,len, &open_opts);
+	if (!obj) {
+		perror("failed to open object");
 		return -1;
 	}
-	err = register_struct_ops(argv[1]);
 
-	if(err){
-		printf("Unable to register struct_ops %s.o\n",argv[1]);
+	bpf_object__for_each_program(pos, obj) {
+		enum bpf_prog_type prog_type = common_prog_type;
+		const char *sec_name = bpf_program__title(pos, false);
+
+		err = get_prog_type_by_name(sec_name, &prog_type,
+						    &expected_attach_type);
+		if(err<0)
+			goto err_close_obj;
+
+		bpf_program__set_ifindex(pos, ifindex);
+		bpf_program__set_type(pos, prog_type);
+		bpf_program__set_expected_attach_type(pos, expected_attach_type);
+
 	}
-	btf__free(btf_vmlinux);
-  	return err;
-}*/
 
+	load_attr.obj = obj;
+	load_attr.log_level = 1 + 2 + 4;
 
+	err = bpf_object__load_xattr(&load_attr);
+	if (err) {
+		perror("failed to load object file");
+		goto err_close_obj;
+	}
+
+	err = register_struct_ops(base, len);
+err_close_obj:
+	bpf_object__close(obj);
+	return err;
+}
