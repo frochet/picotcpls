@@ -34,6 +34,13 @@
 #include <string.h>
 #include <netinet/tcp.h>
 #include <netinet/in.h>
+#include <errno.h>
+#include <sys/select.h>
+#include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/time.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include "picotypes.h"
 #include "bpf_loader.h"
 #include "picotls.h"
@@ -41,21 +48,254 @@
 
 
 /** Forward declarations */
-static ptls_tcpls_t* tcpls_init_context(ptls_t *ptls, const void *data, size_t datalen,
-    ptls_tcpls_options_t type, uint8_t setlocal, uint8_t settopeer);
+static tcpls_options_t* tcpls_init_context(ptls_t *ptls, const void *data, size_t datalen,
+    tcpls_enum_t type, uint8_t setlocal, uint8_t settopeer);
 
-static int is_varlen(ptls_tcpls_options_t type);
+static int is_varlen(tcpls_enum_t type);
 
-static int setlocal_usertimeout(ptls_t *ptls, ptls_tcpls_t *option);
+static int setlocal_usertimeout(ptls_t *ptls, tcpls_options_t *option);
 
-static int setlocal_bpf_sched(ptls_t *plts, ptls_tcpls_t *option);
+static int setlocal_bpf_sched(ptls_t *ptls, tcpls_options_t *option);
+
+static void _set_primary(tcpls_t *tcpls);
+
+void *tcpls_new(void *ctx, int is_server) {
+  ptls_context_t *ptls_ctx = (ptls_context_t *) ctx;
+  return is_server? ptls_server_new(ptls_ctx) : ptls_client_new(ptls_ctx);
+}
+
+
+/** 
+ * Copy Sockaddr_in into our structures. If is_primary is set, flip that bit
+ * from any other v4 address if set.
+ */
+
+int tcpls_add_v4(void *tls_info, struct sockaddr_in *addr, int is_primary) {
+  tcpls_t *tcpls = (tcpls_t*) tls_info;
+  tcpls_v4_addr_t *new_v4 = malloc(sizeof(tcpls_v4_addr_t));
+  if (new_v4 == NULL)
+    return PTLS_ERROR_NO_MEMORY;
+  new_v4->is_primary = is_primary;
+  new_v4->state = CLOSED;
+  new_v4->socket = 0;
+  memcpy(&new_v4->addr, addr, sizeof(*addr));
+  new_v4->next = NULL;
+
+  tcpls_v4_addr_t *current = tcpls->v4_addr_llist;
+  if (!current) {
+    tcpls->v4_addr_llist = new_v4;
+    return 0;
+  }
+  while (current->next) {
+    if (current->is_primary && is_primary) {
+      current->is_primary = 0;
+    }
+    current = current->next;
+  }
+  current->next = new_v4;
+  return 0;
+}
+int tcpls_add_v6(void *tls_info, struct sockaddr_in6 *addr, int is_primary) {
+  tcpls_t *tcpls = (tcpls_t*) tls_info;
+  tcpls_v6_addr_t *new_v6 = malloc(sizeof(*new_v6));
+  if (new_v6 == NULL)
+    return PTLS_ERROR_NO_MEMORY;
+  new_v6->is_primary = is_primary;
+  new_v6->state = CLOSED;
+  new_v6->socket = 0;
+  memcpy(&new_v6->addr, addr, sizeof(*addr));
+  new_v6->next = NULL;
+
+  tcpls_v6_addr_t *current = tcpls->v6_addr_llist;
+  if (!current) {
+    tcpls->v6_addr_llist = new_v6;
+    return 0;
+  }
+  while(current->next) {
+    if (current->is_primary && is_primary) {
+      current->is_primary = 0;
+    }
+    current = current->next;
+  }
+  current->next = new_v6;
+  return 0;
+}
+/** For connect-by-name sparing 2-RTT logic! Much much further work */
+int tcpls_add_domain(void *tls_info, char* domain) {
+  return 0;
+}
+
+/**
+ * Makes TCP connections to registered IPs that are in CLOSED state.
+ *
+ * Returns -1 upon error
+ *         -2 upon timeout experiration without any addresses connected
+ *         1 if the timeout fired but some address(es) connected
+ *         0 if all addresses connected
+ */
+int tcpls_connect(void *tls_info) {
+  tcpls_t *tcpls = (tcpls_t*) tls_info;
+  int maxfds = 0;
+  int nfds = 0;
+  fd_set wset;
+  FD_ZERO(&wset);
+#define HANDLE_CONNECTS(current) do {                                               \
+  while (current) {                                                                 \
+    if (current->state == CLOSED){                                                  \
+      if (!current->socket) {                                                       \
+        if ((current->socket = socket(AF_INET, SOCK_STREAM|SOCK_NONBLOCK, 0)) < 0) {\
+          current = current->next;                                                  \
+          continue;                                                                 \
+        }                                                                           \
+        FD_SET(current->socket, &wset);                                             \
+        nfds++;                                                                     \
+        if (current->socket > maxfds)                                               \
+          maxfds = current->socket;                                                 \
+      }                                                                             \
+      if (connect(current->socket, (struct sockaddr*) &current->addr, sizeof(current->addr)) < 0 && errno != EINPROGRESS) {\
+        close(current->socket);                                                     \
+        current = current->next;                                                    \
+        continue;                                                                   \
+      }                                                                             \
+      current->state = CONNECTING;                                                  \
+    }                                                                               \
+    else if (current->state == CONNECTING) {                                        \
+      FD_SET(current->socket, &wset);                                               \
+      nfds++;                                                                       \
+      if (current->socket > maxfds)                                                 \
+        maxfds = current->socket;                                                   \
+    }                                                                               \
+    current = current->next;                                                        \
+  }                                                                                 \
+} while (0)
+
+  // Connect with v4 addresses first
+  tcpls_v4_addr_t *current_v4 = tcpls->v4_addr_llist;
+  HANDLE_CONNECTS(current_v4);
+  tcpls_v6_addr_t *current_v6 = tcpls->v6_addr_llist;
+  // Connect with v6 addresses
+  HANDLE_CONNECTS(current_v6);
+#undef HANDLE_CONNECTS
+
+  /* wait until all connected or the timeout fired */
+  int ret;
+  int remaining_nfds = nfds;
+  current_v4 = tcpls->v4_addr_llist;
+  current_v6 = tcpls->v6_addr_llist;
+  struct timeval t_initial, timeout, t_previous, t_current;
+  gettimeofday(&t_initial, NULL);
+  memcpy(&t_previous, &t_initial, sizeof(t_previous));
+  timeout.tv_sec = 1;
+  timeout.tv_usec = 0;
+
+#define CHECK_WHICH_CONNECTED(current) do {                                         \
+  while (current) {                                                                 \
+    if (current->state == CONNECTING && FD_ISSET(current->socket,                   \
+          &wset)) {                                                                 \
+      current->connect_time.tv_sec = sec;                                           \
+      current->connect_time.tv_usec = rtt - sec*(uint64_t)1000000;                  \
+      current->state = CONNECTED;                                                   \
+      int flags = fcntl(current->socket, F_GETFL);                                  \
+      flags &= ~O_NONBLOCK;                                                         \
+      fcntl(current->socket, F_SETFL, flags);                                       \
+    }                                                                               \
+    current = current->next;                                                        \
+  }                                                                                 \
+} while(0) 
+ 
+  while (remaining_nfds) {
+    if ((ret = select(maxfds+1, NULL, &wset, NULL, &timeout)) < 0) {
+      return -1;
+    }
+    else if (!ret) {
+      /* the timeout fired! */
+      if (remaining_nfds == nfds) {
+        /* None of the addresses connected */
+        return -2;
+      }
+      return 1;
+    }
+    else {
+      gettimeofday(&t_current, NULL);
+      
+      int new_val =
+        timeout.tv_sec*(uint64_t)1000000+timeout.tv_usec
+          - (t_current.tv_sec*(uint64_t)1000000+t_current.tv_usec
+              - t_previous.tv_sec*(uint64_t)1000000-t_previous.tv_usec);
+
+      memcpy(&t_previous, &t_current, sizeof(t_previous));
+     
+      int rtt = t_current.tv_sec*(uint64_t)1000000+t_current.tv_usec
+        - t_initial.tv_sec*(uint64_t)1000000-t_initial.tv_usec;
+
+      int sec = new_val / 1000000;
+      timeout.tv_sec = sec;
+      timeout.tv_usec = new_val - timeout.tv_sec*(uint64_t)1000000;
+
+      sec = rtt / 1000000;
+
+      CHECK_WHICH_CONNECTED(current_v4);
+      CHECK_WHICH_CONNECTED(current_v6);
+      remaining_nfds--;
+    }
+  }
+#undef CHECK_WHICH_CONNECTED
+  _set_primary(tcpls);
+  return 0;
+}
+
+ /**
+ * Encrypts and sends input towards the primary path if available; else sends
+ * towards the fallback path if the option is activated.
+ *
+ * Only send if the socket is within a connected state 
+ *
+ * Send through the primary; or switch the primary if some problem occurs
+ * 
+ */
+
+ssize_t tcpls_send(void *tls_info, const void *input, size_t nbytes) {
+  tcpls_t *tcpls = (tcpls_t *) tls_info;
+  int ret;
+  int is_failover_enabled = 0;
+  /** Check the state of connections first */
+  //TODO
+  ret = ptls_send(tcpls->tls, tcpls->sendbuf, input, nbytes);
+  
+  if (is_failover_enabled) {
+    //TODO
+  }
+  
+
+  switch (ret) {
+    /** Error in encryption -- TODO document the possibilties */
+    default: return ret;
+  }
+  /** Get the primary address */
+  ret = send(*tcpls->socket_ptr, tcpls->sendbuf->base, tcpls->sendbuf->off, 0);
+  if (ret < 0) {
+    /** The peer reset the connection */
+    if (errno == ECONNRESET) {
+      /** We might still have data in the socket, and we don't how much the
+       * server read */
+    }
+    else if (errno == EPIPE) {
+      /** Normal close (FIN) then RST */
+    }
+  }
+  return 0;
+}
+
+ssize_t tcpls_receive(void *tls_info, const void *input, size_t nbytes) {
+  return 0;
+}
 
 /**
  * Sends a tcp option which has previously been registered with ptls_set...
  *
  * This function should be called after the handshake is complete for both party
  * */
-int ptls_send_tcpoption(ptls_t *tls, ptls_buffer_t *sendbuf, ptls_tcpls_options_t type)
+int ptls_send_tcpoption(ptls_t *tls, ptls_buffer_t *sendbuf, tcpls_enum_t type)
 {
   if(tls->traffic_protection.enc.aead == NULL)
     return -1;
@@ -71,7 +311,7 @@ int ptls_send_tcpoption(ptls_t *tls, ptls_buffer_t *sendbuf, ptls_tcpls_options_
         tls->key_update_send_request = 0;
   }
   /** Get the option */
-  ptls_tcpls_t *option;
+  tcpls_options_t *option;
   int i;
   int found = 0;
   for (i = 0; i < NBR_SUPPORTED_TCPLS_OPTIONS && !found; i++) {
@@ -117,8 +357,10 @@ int ptls_send_tcpoption(ptls_t *tls, ptls_buffer_t *sendbuf, ptls_tcpls_options_
 int ptls_set_user_timeout(ptls_t *ptls, uint16_t value, uint16_t sec_or_min,
     uint8_t setlocal, uint8_t settopeer) {
   int ret = 0;
-  ptls_tcpls_t *option;
+  tcpls_options_t *option;
   uint16_t *val = malloc(sizeof(uint16_t));
+  if (val == NULL)
+    return PTLS_ERROR_NO_MEMORY;
   *val = value | sec_or_min << 15;
   option = tcpls_init_context(ptls, val, 2, USER_TIMEOUT, setlocal, settopeer);
   if (!option)
@@ -127,6 +369,18 @@ int ptls_set_user_timeout(ptls_t *ptls, uint16_t value, uint16_t sec_or_min,
     ret = setlocal_usertimeout(ptls, option);
   }
   return ret;
+}
+
+/**
+ *  Notes
+ *
+ *  Need to use poll() or select() to the set of fds to read back pong messages
+ *  added IPs path to probe)
+ *
+ */
+
+int ptls_set_happy_eyeball(ptls_t *ptls) {
+  return 0;
 }
 
 int ptls_set_faileover(ptls_t *ptls, char *address) {
@@ -139,7 +393,7 @@ int ptls_set_faileover(ptls_t *ptls, char *address) {
 int ptls_set_bpf_cc(ptls_t *ptls, const uint8_t *bpf_prog_bytecode, size_t bytecodelen,
     int setlocal, int settopeer) {
   int ret = 0;
-  ptls_tcpls_t *option;
+  tcpls_options_t *option;
   uint8_t* bpf_cc = NULL;
   if ((bpf_cc =  malloc(bytecodelen)) == NULL)
     return PTLS_ERROR_NO_MEMORY;
@@ -153,8 +407,10 @@ int ptls_set_bpf_cc(ptls_t *ptls, const uint8_t *bpf_prog_bytecode, size_t bytec
   return ret;
 }
 
-static ptls_tcpls_t*  tcpls_init_context(ptls_t *ptls, const void *data, size_t datalen,
-    ptls_tcpls_options_t type, uint8_t setlocal, uint8_t settopeer) {
+/*===================================Internal========================================*/
+
+static tcpls_options_t*  tcpls_init_context(ptls_t *ptls, const void *data, size_t datalen,
+    tcpls_enum_t type, uint8_t setlocal, uint8_t settopeer) {
   ptls->ctx->support_tcpls_options = 1;
   if (!ptls->tcpls_options) {
     ptls->tcpls_options = malloc(sizeof(*ptls->tcpls_options)*NBR_SUPPORTED_TCPLS_OPTIONS);
@@ -170,7 +426,7 @@ static ptls_tcpls_t*  tcpls_init_context(ptls_t *ptls, const void *data, size_t 
   /** Picking up the right slot in the list, i.e;, the first unused should have
    * a len of 0
    * */
-  ptls_tcpls_t *option = NULL;
+  tcpls_options_t *option = NULL;
   for (int i = 0; i < NBR_SUPPORTED_TCPLS_OPTIONS; i++) {
     /** already set or Not yet set */
     if ((ptls->tcpls_options[i].type == type && ptls->tcpls_options[i].data->base)
@@ -195,7 +451,8 @@ static ptls_tcpls_t*  tcpls_init_context(ptls_t *ptls, const void *data, size_t 
       *option->data = ptls_iovec_init(data, sizeof(uint16_t));
       option->type = USER_TIMEOUT;
       return option;
-    case FAILOVER: break;
+    case FAILOVER_ADDR4:
+    case FAILOVER_ADDR6: break;
     case BPF_CC:
       if (option->data->len) {
       /** We already had one bpf cc, free it */
@@ -211,11 +468,11 @@ static ptls_tcpls_t*  tcpls_init_context(ptls_t *ptls, const void *data, size_t 
   return NULL;
 }
 
-int handle_tcpls_extension_option(ptls_t *ptls, ptls_tcpls_options_t type,
+int handle_tcpls_extension_option(ptls_t *ptls, tcpls_enum_t type,
     const uint8_t *input, size_t inputlen) {
   if (!ptls->ctx->tcpls_options_confirmed)
     return -1;
-  ptls_tcpls_t *option = NULL;
+  tcpls_options_t *option = NULL;
   switch (type) {
     case USER_TIMEOUT:
       {
@@ -228,7 +485,8 @@ int handle_tcpls_extension_option(ptls_t *ptls, ptls_tcpls_options_t type,
         return setlocal_usertimeout(ptls, option);
       }
       break;
-    case FAILOVER:
+    case FAILOVER_ADDR4:
+    case FAILOVER_ADDR6:
       break;
     case BPF_CC:
       {
@@ -251,7 +509,7 @@ int handle_tcpls_extension_option(ptls_t *ptls, ptls_tcpls_options_t type,
 int handle_tcpls_record(ptls_t *tls, struct st_ptls_record_t *rec)
 {
   int ret = 0;
-  ptls_tcpls_options_t type;
+  tcpls_enum_t type;
   uint8_t *init_buf = NULL;
   /** Assumes a TCPLS option holds within 1 record ; else we need to buffer the
    * option to deliver it to handle_tcpls_extension_option 
@@ -264,7 +522,7 @@ int handle_tcpls_record(ptls_t *tls, struct st_ptls_record_t *rec)
     memset(tls->tcpls_buf, 0, sizeof(*tls->tcpls_buf));
   }
   
-  type = (ptls_tcpls_options_t) *rec->fragment;
+  type = (tcpls_enum_t) *rec->fragment;
   /** Check whether type is a variable len option */
   if (is_varlen(type)){
     /*size_t optsize = ntoh32(rec->fragment+sizeof(type));*/
@@ -307,10 +565,29 @@ Exit:
 }
 
 
-static int setlocal_usertimeout(ptls_t *ptls, ptls_tcpls_t *option) {
-  return 0;
+/**
+ * In case of failover, the peer only switch TCP's connection upon reception of this signal
+ *
+ * Pick the faster non-primary and open TCP connection to send the signal
+ * */
+
+int tcpls_sends_failover_signal(tcpls_t *tcpls, ptls_buffer_t *sendbuf) {
+
+  uint8_t input[TCPLS_SIGNAL_SIZE];
+  tcpls_enum_t f_signal = FAILOVER_SIGNAL;
+  memcpy(input, &f_signal, sizeof(f_signal));
+  memcpy(input+sizeof(f_signal), &tcpls->tls->traffic_protection.enc.seq,
+      sizeof(tcpls->tls->traffic_protection.enc.seq));
+  /** Synchronization problem in sequence number ! */
+  return buffer_push_encrypted_records(sendbuf,
+      PTLS_CONTENT_TYPE_TCPLS_OPTION, input,
+      TCPLS_SIGNAL_SIZE, &tcpls->tls->traffic_protection.enc);
 }
 
+
+static int setlocal_usertimeout(ptls_t *ptls, tcpls_options_t *option) {
+  return 0;
+}
 
 static int setlocal_bpf_sched(ptls_t *ptls, ptls_tcpls_t *option) {
   int err = -1;
@@ -325,7 +602,72 @@ static int setlocal_bpf_sched(ptls_t *ptls, ptls_tcpls_t *option) {
 
 /*=====================================utilities======================================*/
 
-static int is_varlen(ptls_tcpls_options_t type) {
+/**
+ * ret < 0 : t1 < t2
+ * ret == 0: t1 == t2
+ * ret > 0 : t1 > t2
+ */
+static int cmp_times(struct timeval *t1, struct timeval *t2) {
+  int64_t val = t1->tv_sec*1000000 + t1->tv_usec - t2->tv_sec*1000000-t2->tv_usec;
+  if (val < 0)
+    return -1;
+  else if (val == 0)
+    return 0;
+  else
+    return 1;
+}
+
+/**
+ * If a a primary address has not been set by the application, set the
+ * address for which we connected the fastest as primary
+ */
+
+static void _set_primary(tcpls_t *tcpls) {
+  tcpls_v4_addr_t *current_v4 = tcpls->v4_addr_llist;
+  tcpls_v6_addr_t *current_v6 = tcpls->v6_addr_llist;
+  tcpls_v4_addr_t *primary_v4 = current_v4;
+  tcpls_v6_addr_t *primary_v6 = current_v6;
+  int has_primary = 0;
+#define CHECK_PRIMARY(current, primary) do {                                            \
+  while (current) {                                                                     \
+    if (current->is_primary) {                                                          \
+      has_primary = 1;                                                                  \
+      break;                                                                            \
+    }                                                                                   \
+    if (cmp_times(&primary->connect_time, &current->connect_time) < 0)                  \
+      primary = current;                                                                \
+                                                                                        \
+    current = current->next;                                                            \
+  }                                                                                     \
+} while(0)
+
+  CHECK_PRIMARY(current_v4, primary_v4);
+  if (has_primary)
+    return;
+  CHECK_PRIMARY(current_v6, primary_v6);
+  if (has_primary)
+    return;
+  assert(primary_v4 || primary_v6);
+  /* if we hav a v4 and a v6, compare them */
+  if (primary_v4 && primary_v6) {
+    switch (cmp_times(&primary_v4->connect_time, &primary_v6->connect_time)) {
+      case -1: primary_v4->is_primary = 1;
+               tcpls->socket_ptr = &primary_v4->socket; break;
+      case 0:
+      case 1: primary_v6->is_primary = 1;
+              tcpls->socket_ptr = &primary_v6->socket; break;
+      default: primary_v6->is_primary = 1; 
+               tcpls->socket_ptr = &primary_v6->socket; break;
+    }
+  } else if (primary_v4) {
+    primary_v4->is_primary = 1;
+  } else if (primary_v6) {
+    primary_v6->is_primary = 1;
+  }
+#undef CHEK_PRIMARY
+}
+
+static int is_varlen(tcpls_enum_t type) {
   return (type == BPF_CC);
 }
 

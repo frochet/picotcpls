@@ -587,7 +587,7 @@ static void test_handshake(ptls_iovec_t ticket, int mode, int expect_ticket, int
         ctx_peer->on_client_hello = &cb;
         static const ptls_iovec_t protocols[] = {{(uint8_t *)"h2", 2}, {(uint8_t *)"http/1.1", 8}};
         client_hs_prop.client.negotiated_protocols.list = protocols;
-        client_hs_prop.client.negotiated_protocols.count = sizeof(protocols) / sizeof(protocols[0]);
+        client_hs_prop.client.negotiated_protocols.count = PTLS_ELEMENTSOF(protocols);
         ptls_set_server_name(client, "test.example.com", 0);
     }
 
@@ -1430,7 +1430,7 @@ static void test_tcpls_usertimeout(void)
       break;
   }
   ok(i==0);
-  ptls_tcpls_t option = server->tcpls_options[i];
+  tcpls_options_t option = server->tcpls_options[i];
   ok(*((uint16_t*) option.data->base) == 1);
   /** 1 minute */
   ret = ptls_set_user_timeout(server, 1, 1, 1, 1);
