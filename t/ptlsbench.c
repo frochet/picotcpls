@@ -215,8 +215,8 @@ static int bench_run_aead(char  * OS, char * HW, int basic_ref, uint64_t s0, con
     *s += s0;
 
     memset(secret, 'z', sizeof(secret));
-    e = ptls_aead_new(aead, hash, 1, secret, NULL);
-    d = ptls_aead_new(aead, hash, 0, secret, NULL);
+    e = ptls_aead_new(aead, hash, 1, secret, NULL, 0);
+    d = ptls_aead_new(aead, hash, 0, secret, NULL, 0);
 
     if (e == NULL || d == NULL) {
         ret = PTLS_ERROR_NO_MEMORY;
