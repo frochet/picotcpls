@@ -32,6 +32,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <netinet/tcp.h>
+#include <netinet/in.h>
 #include <errno.h>
 #include <sys/select.h>
 #include <sys/socket.h>
@@ -40,8 +42,10 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include "picotypes.h"
+#include "bpf_loader.h"
 #include "picotls.h"
 #include "picotcpls.h"
+
 
 /** Forward declarations */
 static tcpls_options_t* tcpls_init_context(ptls_t *ptls, const void *data, size_t datalen,
@@ -585,9 +589,14 @@ static int setlocal_usertimeout(ptls_t *ptls, tcpls_options_t *option) {
   return 0;
 }
 
-
 static int setlocal_bpf_sched(ptls_t *ptls, tcpls_options_t *option) {
-  return 0;
+  int err = -1;
+  if(option->type!=BPF_CC)
+    return err;
+  if(option->setlocal || option->settopeer){
+    err = load_bpf_prog(option->data->base, option->data->len);
+  }	
+  return err;
 }
 
 

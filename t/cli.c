@@ -48,6 +48,7 @@
 #endif
 #include "picotls.h"
 #include "picotls/openssl.h"
+#include "../lib/bpf/loader.c"
 #if PICOTLS_USE_BROTLI
 #include "picotls/certificate_compression.h"
 #endif
@@ -362,6 +363,9 @@ static void usage(const char *cmd)
            "  -v                   verify peer using the default certificates\n"
            "  -y cipher-suite      cipher-suite to be used, e.g., aes128gcmsha256 (default:\n"
            "                       all)\n"
+           "  -T                   enable tcpls support)\n"
+	   "  -f                   enable failover support)\n"
+           "  -G                   eBPF congestion control file)\n"
            "  -h                   print this help\n"
            "\n"
            "Supported named groups: secp256r1"
@@ -405,7 +409,7 @@ int main(int argc, char **argv)
     socklen_t salen;
     int family = 0;
 
-    while ((ch = getopt(argc, argv, "46abBC:c:i:Ik:nN:es:SE:K:l:y:vh")) != -1) {
+    while ((ch = getopt(argc, argv, "46abBC:c:i:Ik:nN:es:SE:K:l:y:vhfTG:")) != -1) {
         switch (ch) {
         case '4':
             family = AF_INET;
@@ -531,6 +535,15 @@ int main(int argc, char **argv)
                 exit(1);
             }
         } break;
+	case 'T':
+	     ctx.support_tcpls_options = 1;
+             break;
+        case 'f':
+	     ctx.support_tcpls_options_failover = 1;
+             break;
+        case 'G':
+	     ctx.support_tcpls_options_cc = 1;
+             break;
         case 'h':
             usage(argv[0]);
             exit(0);

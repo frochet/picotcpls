@@ -764,6 +764,7 @@ typedef struct st_ptls_log_event_t {
      * if set, EOED will not be emitted or accepted
      */
     unsigned omit_end_of_early_data : 1;
+
     /**
      * if set, we will communicate our ability to send TCP options
      * at the handshake
@@ -775,6 +776,18 @@ typedef struct st_ptls_log_event_t {
      * options
      */
     unsigned tcpls_options_confirmed : 1;
+
+    /**
+     * Set to support failover, if the peer support tcpls_options   
+     * options
+     */
+    unsigned support_tcpls_options_failover : 1;
+
+    /**
+     * Set to support ebpf congestion control, if the peer support tcpls_options   
+     * options
+     */
+    unsigned support_tcpls_options_cc : 1;
     
     /**
      *  Whether or not we use records with sequence number in it

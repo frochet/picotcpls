@@ -41,6 +41,8 @@
 #include "picotls/pembase64.h"
 #include "picotls/openssl.h"
 
+#include "../lib/bpf/loader.c"
+
 static int emit_esni(ptls_key_exchange_context_t **key_exchanges, ptls_cipher_suite_t **cipher_suites, uint16_t padded_length,
                      uint64_t not_before, uint64_t lifetime, char const *published_sni, char const *file_output)
 {
