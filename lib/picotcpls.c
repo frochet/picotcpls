@@ -589,7 +589,7 @@ static int setlocal_usertimeout(ptls_t *ptls, tcpls_options_t *option) {
   return 0;
 }
 
-static int setlocal_bpf_sched(ptls_t *ptls, ptls_tcpls_t *option) {
+static int setlocal_bpf_sched(ptls_t *ptls, tcpls_options_t *option) {
   int err = -1;
   if(option->type!=BPF_CC)
     return err;
