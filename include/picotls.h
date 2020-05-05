@@ -398,6 +398,8 @@ extern "C" {
     size_t (*do_encrypt_final)(struct st_ptls_aead_context_t *ctx, void *output);
     size_t (*do_decrypt)(struct st_ptls_aead_context_t *ctx, void *output, const void *input, size_t inlen, const void *iv,
         const void *aad, size_t aadlen);
+    /* Temporary: tell whether we use records with packet numbers */
+    unsigned support_rec_ext : 1;
   } ptls_aead_context_t;
 
   /**
@@ -786,6 +788,11 @@ typedef struct st_ptls_log_event_t {
      * options
      */
     unsigned support_tcpls_options_cc : 1;
+    
+    /**
+     *  Whether or not we use records with sequence number in it
+     */
+    unsigned support_rec_ext : 1;
 
     /**
      * Socket on which eventually applies local and received tcpls_options
@@ -960,6 +967,7 @@ typedef struct st_ptls_log_event_t {
       uint16_t version;
       size_t length;
       const uint8_t *fragment;
+      uint64_t seq;
   };
 
   struct st_ptls_client_hello_psk_t {
@@ -1582,7 +1590,7 @@ static void ptls_cipher_encrypt(ptls_cipher_context_t *ctx, void *output, const 
  * @return pointer to an AEAD context if successful, otherwise NULL
  */
 ptls_aead_context_t *ptls_aead_new(ptls_aead_algorithm_t *aead, ptls_hash_algorithm_t *hash, int is_enc, const void *secret,
-                                   const char *label_prefix);
+                                   const char *label_prefix, int support_rec_ext);
 /**
  * destroys an AEAD cipher context
  */
