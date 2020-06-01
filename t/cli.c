@@ -66,24 +66,50 @@ static void shift_buffer(ptls_buffer_t *buf, size_t delta)
     }
 }
 
+struct tcpls_options{
+	int timeoutval;
+	unsigned int second;
+	struct sockaddr_in addr;
+	struct sockaddr_in addr2;
+    	struct sockaddr_in6 addr6;
+	struct sockaddr_in ours_addr;
+    	struct sockaddr_in6 ours_addr6;
+	unsigned int timeout:1;
+	unsigned int v4_1:1;
+	unsigned int v4_2:1;
+	unsigned int v6:1;
+	unsigned int ours_v4:1;
+	unsigned int ours_v6:1;
+};
+
 static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server_name, const char *input_file,
-                             ptls_handshake_properties_t *hsprop, int request_key_update, int keep_sender_open)
+                             ptls_handshake_properties_t *hsprop, int request_key_update, 
+			    int keep_sender_open, tcpls_t *tcpls, struct tcpls_options *tcpls_options)
 {
     static const int inputfd_is_benchmark = -2;
+    ptls_t *tls;
+    if(!ctx->support_tcpls_options)
+    	tls = ptls_new(ctx, server_name == NULL);
+    else tls = tcpls->tls;
 
-    ptls_t *tls = ptls_new(ctx, server_name == NULL);
+
+    
+
     ptls_buffer_t rbuf, encbuf, ptbuf;
     enum { IN_HANDSHAKE, IN_1RTT, IN_SHUTDOWN } state = IN_HANDSHAKE;
     int inputfd = 0, ret = 0;
     size_t early_bytes_sent = 0;
     uint64_t data_received = 0;
     ssize_t ioret;
+    unsigned int settcpls_option = 0;
 
     uint64_t start_at = ctx->get_time->cb(ctx->get_time);
 
     ptls_buffer_init(&rbuf, "", 0);
     ptls_buffer_init(&encbuf, "", 0);
     ptls_buffer_init(&ptbuf, "", 0);
+
+    
 
     fcntl(sockfd, F_SETFL, O_NONBLOCK);
 
@@ -106,11 +132,27 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
         }
     }
 
+    
     while (1) {
         /* check if data is available */
         fd_set readfds, writefds, exceptfds;
         int maxfd = 0;
         struct timeval timeout;
+
+	/* checks if handshake is complete to send tcpls_options*/
+	if(ptls_handshake_is_complete(tls) && !settcpls_option){
+		if(ctx->support_tcpls_options){
+	    		assert(ctx->tcpls_options_confirmed);
+			if(tcpls_options->timeout){
+				assert(ptls_set_user_timeout(tls, 
+					tcpls_options->timeoutval, tcpls_options->second, 0, 1) == 0);
+				assert(ptls_send_tcpoption(tls, &encbuf, USER_TIMEOUT)==0);
+				tcpls_options->timeout = 0;
+			}
+		}
+		settcpls_option = 1;
+	}
+
         do {
             FD_ZERO(&readfds);
             FD_ZERO(&writefds);
@@ -129,6 +171,7 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
             timeout.tv_sec = encbuf.off != 0 ? 0 : 3600;
             timeout.tv_usec = 0;
         } while (select(maxfd, &readfds, &writefds, &exceptfds, &timeout) == -1);
+
 
         /* consume incoming messages */
         if (FD_ISSET(sockfd, &readfds) || FD_ISSET(sockfd, &exceptfds)) {
@@ -179,6 +222,7 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
             }
         }
 
+
         /* encrypt data to send, if any is available */
         if (encbuf.off == 0 || state == IN_HANDSHAKE) {
             static const size_t block_size = 16384;
@@ -228,7 +272,7 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
                 ptbuf.off = 0;
             }
         }
-
+	
         /* send any data */
         if (encbuf.off != 0) {
             while ((ioret = write(sockfd, encbuf.base, encbuf.off)) == -1 && errno == EINTR)
@@ -281,9 +325,19 @@ Exit:
 }
 
 static int run_server(struct sockaddr *sa, socklen_t salen, ptls_context_t *ctx, const char *input_file,
-                      ptls_handshake_properties_t *hsprop, int request_key_update)
+                      ptls_handshake_properties_t *hsprop, int request_key_update, tcpls_t *tcpls, struct tcpls_options *tcpls_options)
 {
     int listen_fd, conn_fd, on = 1;
+    
+    /*if(ctx->support_tcpls_options){
+	struct timeval timeout;
+	timeout.tv_sec = 150;
+        timeout.tv_usec = 0;
+        printf("trying connected\n");
+	int err = tcpls_connect(tcpls->tls, NULL, NULL, &timeout);
+	assert(err);
+	printf("connected\n");
+    }*/
 
     if ((listen_fd = socket(sa->sa_family, SOCK_STREAM, 0)) == -1) {
         perror("socket(2) failed");
@@ -301,34 +355,53 @@ static int run_server(struct sockaddr *sa, socklen_t salen, ptls_context_t *ctx,
         perror("listen(2) failed");
         return 1;
     }
+    if(ctx->support_tcpls_options)
+    	tcpls->socket_primary = listen_fd;
 
     fprintf(stderr, "server started on port %d\n", ntohs(((struct sockaddr_in *)sa)->sin_port));
     while (1) {
         fprintf(stderr, "waiting for connections\n");
         if ((conn_fd = accept(listen_fd, NULL, 0)) != -1)
-            handle_connection(conn_fd, ctx, NULL, input_file, hsprop, request_key_update, 0);
+            handle_connection(conn_fd, ctx, NULL, input_file, hsprop, request_key_update, 0, tcpls, tcpls_options);
     }
 
     return 0;
 }
 
 static int run_client(struct sockaddr *sa, socklen_t salen, ptls_context_t *ctx, const char *server_name, const char *input_file,
-                      ptls_handshake_properties_t *hsprop, int request_key_update, int keep_sender_open)
+                      ptls_handshake_properties_t *hsprop, int request_key_update, int keep_sender_open,  tcpls_t *tcpls, struct tcpls_options *tcpls_options)
 {
     int fd;
 
     hsprop->client.esni_keys = resolve_esni_keys(server_name);
 
-    if ((fd = socket(sa->sa_family, SOCK_STREAM, 0)) == 1) {
-        perror("socket(2) failed");
-        return 1;
-    }
-    if (connect(fd, sa, salen) != 0) {
-        perror("connect(2) failed");
-        return 1;
+    if(ctx->support_tcpls_options){
+	struct timeval timeout;
+	timeout.tv_sec = 150;
+        timeout.tv_usec = 0;
+	int err = tcpls_connect(tcpls->tls, NULL, NULL, &timeout);
+	if(err){
+		perror("tcpls_connect(2) failed");
+        	return 1;
+	}
+		
+	fd = tcpls->socket_primary ;
     }
 
-    int ret = handle_connection(fd, ctx, server_name, input_file, hsprop, request_key_update, keep_sender_open);
+    else{
+
+
+    	if ((fd = socket(sa->sa_family, SOCK_STREAM, 0)) == 1) {
+        	perror("socket(2) failed");
+        	return 1;
+    	}
+    	if (connect(fd, sa, salen) != 0) {
+        	perror("connect(2) failed");
+        	return 1;
+    	}
+    }
+
+    int ret = handle_connection(fd, ctx, server_name, input_file, hsprop, request_key_update, keep_sender_open, tcpls, tcpls_options);
     free(hsprop->client.esni_keys.base);
     return ret;
 }
@@ -404,8 +477,13 @@ int main(int argc, char **argv)
     struct sockaddr_storage sa;
     socklen_t salen;
     int family = 0;
+    struct tcpls_options tcpls_options;
+    tcpls_t *tcpls;
+    char *addr1, *addr2;
 
-    while ((ch = getopt(argc, argv, "46abBC:c:i:Ik:nN:es:SE:K:l:y:vh")) != -1) {
+    
+
+    while ((ch = getopt(argc, argv, "46abBC:c:i:Ik:nN:es:SE:K:l:y:vhtd:w:W:z:Z:")) != -1) {
         switch (ch) {
         case '4':
             family = AF_INET;
@@ -534,6 +612,62 @@ int main(int argc, char **argv)
         case 'h':
             usage(argv[0]);
             exit(0);
+	case 't':
+		ctx.support_tcpls_options = 1;
+		break;
+
+        case 'd':
+		if(sscanf(optarg, "%d %d", 
+			&tcpls_options.timeoutval, &tcpls_options.second) < 0){
+			usage(argv[0]);
+            		exit(0);
+		}
+		tcpls_options.timeout = 1;
+		break;
+	case 'w':
+		addr1 = malloc(sizeof(char)*15);
+		addr2 = malloc(sizeof(char)*15);
+		addr1 = strtok(optarg, ",");
+		addr2 = strtok(NULL, ",");
+		if(addr1!=NULL){
+			if(inet_pton(AF_INET, addr1, &tcpls_options.addr.sin_addr)!=1){
+				usage(argv[0]);
+            			exit(0);
+			}
+			tcpls_options.v4_1 = 1;
+		}
+		if(addr2!=NULL){
+			if(inet_pton(AF_INET, addr2, &tcpls_options.addr2.sin_addr)!=1){
+				usage(argv[0]);
+            			exit(0);
+			}
+			tcpls_options.v4_2 = 1;
+		}
+		break;
+
+	case 'W':
+		if(inet_pton(AF_INET6, optarg, &tcpls_options.addr6.sin6_addr)!=1){
+			usage(argv[0]);
+            		exit(0);
+		}
+		tcpls_options.v6 = 1;
+		break;
+
+	case 'z':
+		if(inet_pton(AF_INET, optarg, &tcpls_options.ours_addr.sin_addr)!=1){
+			usage(argv[0]);
+            		exit(0);
+		}
+		tcpls_options.ours_v4 = 1;
+		break;
+
+	case 'Z':
+		if(inet_pton(AF_INET6, optarg, &tcpls_options.ours_addr6.sin6_addr)!=1){
+			usage(argv[0]);
+            		exit(0);
+		}
+		tcpls_options.ours_v6 = 1;
+		break;
         default:
             exit(1);
         }
@@ -592,10 +726,54 @@ int main(int argc, char **argv)
 
     if (resolve_address((struct sockaddr *)&sa, &salen, host, port, family, SOCK_STREAM, IPPROTO_TCP) != 0)
         exit(1);
+   
+    if(ctx.support_tcpls_options){
+	tcpls = tcpls_new(&ctx, is_server);
+        if(tcpls_options.ours_v4){
+		tcpls_options.ours_addr.sin_port = htons(atoi(port));
+		tcpls_options.ours_addr.sin_family = AF_INET;
+		if(tcpls_add_v4(tcpls->tls, &tcpls_options.ours_addr, 1, 0, 1))
+			exit(1);	
+		assert(tcpls->ours_v4_addr_llist);
+		assert(tcpls->ours_v4_addr_llist->is_primary == 1);
+	}
 
+	if(tcpls_options.ours_v6){
+		tcpls_options.ours_addr6.sin6_port = htons(atoi(port));
+		tcpls_options.ours_addr6.sin6_family = AF_INET6;
+		if(tcpls_add_v6(tcpls->tls, &tcpls_options.ours_addr6, 1, 0, 1))
+			exit(1);	
+		assert(tcpls->ours_v6_addr_llist);
+		assert(tcpls->ours_v6_addr_llist->is_primary == 1);
+	}
+
+	if(tcpls_options.v4_1){
+		tcpls_options.addr.sin_port = htons(atoi(port));
+		tcpls_options.addr.sin_family = AF_INET;
+		if(tcpls_add_v4(tcpls->tls, &tcpls_options.addr, 0, 1, 0))
+			exit(1);
+		tcpls_options.v4_1 = 0;
+	}
+	if(tcpls_options.v4_2){
+		tcpls_options.addr2.sin_port = htons(atoi(port));
+		tcpls_options.addr2.sin_family = AF_INET;
+		if(tcpls_add_v4(tcpls->tls, &tcpls_options.addr2, 0, 1, 0))
+			exit(1);
+		tcpls_options.v4_2 = 0;
+	}
+	if(tcpls_options.v6){
+		tcpls_options.addr6.sin6_port = htons(atoi(port));
+		tcpls_options.addr6.sin6_family = AF_INET6;
+		if(tcpls_add_v6(tcpls->tls, &tcpls_options.addr6, 0, 1, 0))
+			exit(1);
+		tcpls_options.v6 = 0;
+	}
+    }
+
+   
     if (is_server) {
-        return run_server((struct sockaddr *)&sa, salen, &ctx, input_file, &hsprop, request_key_update);
+        return run_server((struct sockaddr *)&sa, salen, &ctx, input_file, &hsprop, request_key_update, tcpls, &tcpls_options);
     } else {
-        return run_client((struct sockaddr *)&sa, salen, &ctx, host, input_file, &hsprop, request_key_update, keep_sender_open);
+        return run_client((struct sockaddr *)&sa, salen, &ctx, host, input_file, &hsprop, request_key_update, keep_sender_open, tcpls, &tcpls_options);
     }
 }

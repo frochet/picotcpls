@@ -299,11 +299,13 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
       while (current_v4 || current_v6) {
         if (ours_current_v4 && current_v4) {
           if (handle_connect(tcpls, ours_current_v4, current_v4, NULL, NULL, AF_INET, &nfds, &maxfds, &coninfo, &wset) < 0) {
+	    printf("v4\n");
             return -1;
           }
         }
         if (ours_current_v6 && current_v6) {
           if(handle_connect(tcpls, NULL, NULL, ours_current_v6, current_v6, AF_INET6, &nfds, &maxfds, &coninfo, &wset) < 0) {
+            printf("v6\n");
             return -1;
           }
         }
@@ -852,6 +854,7 @@ static int handle_connect(tcpls_t *tcpls, tcpls_v4_addr_t *src, tcpls_v4_addr_t
         coninfo->is_primary = 1;
     }
   }
+
   if (coninfo->state == CLOSED) {
     /** we can connect */
     if (!coninfo->socket) {
@@ -1189,6 +1192,18 @@ Exit:
 }
 
 static int setlocal_usertimeout(ptls_t *ptls, int val) {
+  printf("should set  local user time out %d %d\n", val, ptls->tcpls->socket_primary);
+  struct timeval timeout;      
+  timeout.tv_sec = val;
+  timeout.tv_usec = 0;
+
+  if (setsockopt (ptls->tcpls->socket_primary, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,
+                sizeof(timeout)) < 0)
+       return -1;
+
+  if (setsockopt (ptls->tcpls->socket_primary, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout,
+                sizeof(timeout)) < 0)
+        return -1;
   return 0;
 }
 
@@ -1401,9 +1416,10 @@ static void _set_primary(tcpls_t *tcpls) {
   }
   if (has_primary) {
     tcpls->socket_primary = primary_con->socket;
+    printf("primary 1 %d\n", tcpls->socket_primary);
     return;
   }
-  
+ 
   tcpls->socket_primary = primary_con->socket;
   /* set the primary bit to the addresses */
   if (primary_con->src)
