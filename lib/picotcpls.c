@@ -11,6 +11,7 @@
  *   <li> tcpls_add_v4 </li>
  *   <li> tcpls_add_v6 </li>
  *   <li> tcpls_connect </li>
+ *   <li> tcpls_handshake </li>
  *   <li> tcpls_send </li>
  *   <li> tcpls_receive </li>
  *   <li> tcpls_stream_new </li> (Optional)
@@ -70,7 +71,7 @@ static void _set_primary(tcpls_t *tcpls);
 static tcpls_stream_t *stream_new(ptls_t *tcpls, streamid_t streamid,
     connect_info_t *con, int is_ours);
 static void stream_free(tcpls_stream_t *stream);
-static int stream_send_control_message(tcpls_t *tcpls, tcpls_stream_t *stream,
+static int stream_send_control_message(tcpls_t *tcpls, ptls_aead_context_t *enc,
     const void *inputinfo, tcpls_enum_t message, uint32_t message_len);
 static connect_info_t *get_con_info_from_socket(tcpls_t *tcpls, int socket);
 static int get_con_info_from_addrs(tcpls_t *tcpls, tcpls_v4_addr_t *src,
@@ -96,7 +97,7 @@ void *tcpls_new(void *ctx, int is_server) {
     return NULL;
   if (is_server) {
     tls = ptls_server_new(ptls_ctx);
-    tcpls->next_stream_id = 2147483648;  // 2**31
+    tcpls->next_stream_id = 2147483649;  // 2**31 +1
   }
   else {
     tls = ptls_client_new(ptls_ctx);
@@ -109,7 +110,7 @@ void *tcpls_new(void *ctx, int is_server) {
   ptls_buffer_init(tcpls->sendbuf, "", 0);
   ptls_buffer_init(tcpls->recvbuf, "", 0);
   tcpls->send_start = 0;
-  ptls_ctx->output_decrypted_tcpls_data = 1;
+  ptls_ctx->output_decrypted_tcpls_data = 0;
   tcpls->socket_primary = 0;
   tcpls->socket_rcv = 0;
   tcpls->ours_v4_addr_llist = NULL;
@@ -119,6 +120,7 @@ void *tcpls_new(void *ctx, int is_server) {
   tcpls->nbr_of_peer_streams_attached = 0;
   tcpls->nbr_tcp_streams = 0;
   tcpls->check_stream_attach_sent = 0;
+  tcpls->streams_marked_for_close = 0;
   tcpls->tcpls_options = new_list(sizeof(tcpls_options_t), NBR_SUPPORTED_TCPLS_OPTIONS);
   tcpls->streams = new_list(sizeof(tcpls_stream_t), 3);
   tcpls->connect_infos = new_list(sizeof(connect_info_t), 2);
@@ -451,6 +453,47 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
   return 0;
 }
 
+/**
+ * Performs a TLS handshake upon the primary connection
+ *
+ */
+
+int tcpls_handshake(ptls_t *tls) {
+  tcpls_t *tcpls = tls->tcpls;
+  if (!tcpls)
+    return -1;
+  uint8_t recvbuf[8192];
+  ssize_t roff, rret;
+  ptls_buffer_t sendbuf;
+  int ret;
+  connect_info_t *con = get_primary_con_info(tcpls);
+  if (!con)
+    goto Exit;
+  do {
+    while ((rret = read(con->socket, recvbuf, sizeof(recvbuf))) == -1 && errno == EINTR)
+        ;
+    if (rret == 0)
+      goto Exit;
+    roff = 0;
+    do {
+      ptls_buffer_init(&sendbuf, "", 0);
+      size_t consumed = rret - roff;
+      ret = ptls_handshake(tls, &sendbuf, recvbuf + roff, &consumed, NULL);
+      roff += consumed;
+      if ((ret == 0 || ret == PTLS_ERROR_IN_PROGRESS) && sendbuf.off != 0) {
+        if ((rret = send(con->socket, sendbuf.base, sendbuf.off, 0)) < 0) {
+           goto Exit;
+        }
+      }
+      ptls_buffer_dispose(&sendbuf);
+    } while (ret == PTLS_ERROR_IN_PROGRESS && rret != roff);
+  } while (ret == PTLS_ERROR_IN_PROGRESS);
+  ptls_buffer_dispose(&sendbuf);
+  return 0;
+Exit:
+  ptls_buffer_dispose(&sendbuf);
+  return -1;
+}
 
 /**
  * Create and attach locally a new stream to the main address if no addr
@@ -563,25 +606,36 @@ streamid_t tcpls_stream_new(ptls_t *tls, struct sockaddr *src, struct sockaddr *
  * 
  * Note, if stream attach events have not been sent, the application cannot use
  * the streamid to send messages
+ *
+ * if stream id is 0, sends towards the default connection, else sends in the
+ * stream streamid
  * 
  * TODO: add a notify callback event to notify the application about which
  * streams are usable
  */
 
-int tcpls_streams_attach(ptls_t *tls, int sendnow) {
+int tcpls_streams_attach(ptls_t *tls, streamid_t streamid, int sendnow) {
   if (!ptls_handshake_is_complete(tls))
     return -1;
   tcpls_t *tcpls = tls->tcpls;
   tcpls_stream_t *stream;
-  connect_info_t *con = get_primary_con_info(tcpls);
   int ret = 0;
+  ptls_aead_context_t *ctx_to_use;
+  if (!streamid)
+    ctx_to_use = tls->traffic_protection.enc.aead;
+  else {
+    stream = stream_get(tcpls, streamid);
+    if (!stream && !stream->aead_enc)
+      return -1;
+    ctx_to_use = stream->aead_enc;
+  }
   for (int i = 0; i < tcpls->streams->size; i++) {
     stream = list_get(tcpls->streams, i);
     if (stream->need_sending_attach_event) {
       uint8_t input[4];
       /** send the stream id to the peer */
       memcpy(input, &stream->streamid, 4);
-      stream_send_control_message(tcpls, stream, input, STREAM_ATTACH, 4);
+      stream_send_control_message(tcpls, ctx_to_use, input, STREAM_ATTACH, 4);
       stream->send_stream_attach_in_sendbuf_pos = tcpls->sendbuf->off;
       stream->need_sending_attach_event = 0;
       tcpls->check_stream_attach_sent = 1;
@@ -590,6 +644,7 @@ int tcpls_streams_attach(ptls_t *tls, int sendnow) {
   /** Send over the primary socket -- also send any remaining data within
    * sendbuf*/
   if (sendnow) {
+    connect_info_t *con = get_primary_con_info(tcpls);
     ret = send(con->socket, tcpls->sendbuf->base+tcpls->send_start,
         tcpls->sendbuf->off-tcpls->send_start, 0);
     if (ret < 0) {
@@ -615,7 +670,44 @@ int tcpls_streams_attach(ptls_t *tls, int sendnow) {
  * Close a stream. If no stream are attached to any address, then the connection
  * is closed, and the application should call tcpls_free
  */
-int tcpls_stream_close(ptls_t *tls, streamid_t streamid) {
+int tcpls_stream_close(ptls_t *tls, streamid_t streamid, int sendnow) {
+  tcpls_t *tcpls = tls->tcpls;
+  if (!tcpls->streams->size)
+    return 0;
+  int ret;
+  tcpls_stream_t *stream = stream_get(tcpls, streamid);
+  if (!stream)
+    return -1;
+  uint8_t input[4];
+  /** send the stream id to the peer */
+  memcpy(input, &stream->streamid, 4);
+  /** queue the message in the sending buffer */
+  stream_send_control_message(tcpls, stream->aead_enc, input, STREAM_CLOSE, 4);
+  if (sendnow) {
+    connect_info_t *con = get_primary_con_info(tcpls);
+    ret = send(con->socket, tcpls->sendbuf->base+tcpls->send_start,
+        tcpls->sendbuf->off-tcpls->send_start, 0);
+    if (ret < 0) {
+      /** Failover ?  */
+      return -1;
+    }
+    /* check whether we sent everything */
+    if (tcpls->sendbuf->off == tcpls->send_start + ret) {
+      tcpls->sendbuf->off = 0;
+      tcpls->send_start = 0;
+    }
+    else if (ret+tcpls->send_start < tcpls->sendbuf->off) {
+      tcpls->send_start += ret;
+    }
+    close(stream->con->socket);
+    list_remove(tcpls->streams, stream);
+    stream_free(stream);
+  }
+  else {
+    stream->marked_for_close = 1;
+    stream->stream_usable = 0;
+    tcpls->streams_marked_for_close = 1;
+  }
   return 0;
 }
 
@@ -641,7 +733,6 @@ ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t n
   }
   /** Check whether we already have a stream open; if not, build a stream
    * with the default context */
-  //TODO
   if (!tcpls->streams->size) {
     // Create a stream with the default context, attached to primary IP
     connect_info_t *con = get_primary_con_info(tcpls);
@@ -656,7 +747,7 @@ ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t n
     /** send the stream id to the peer */
     memcpy(input, &stream->streamid, 4);
     /** Add a stream message creation to the sending buffer ! */
-    stream_send_control_message(tcpls, stream, input, STREAM_ATTACH, 4);
+    stream_send_control_message(tcpls, stream->aead_enc, input, STREAM_ATTACH, 4);
     /** To check whether we sent it and if the stream becomes usable */
     stream->send_stream_attach_in_sendbuf_pos = tcpls->sendbuf->off;
     tcpls->check_stream_attach_sent = 1;
@@ -715,6 +806,18 @@ ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t n
     tcpls->sendbuf->off = 0;
     tcpls->send_start = 0;
     tcpls->check_stream_attach_sent = 0;
+    /** Do we have stream cleanup to do ? */
+    if (tcpls->streams_marked_for_close) {
+      for (int i = 0; i < tcpls->streams->size; i++) {
+        stream = list_get(tcpls->streams, i);
+        if (stream->marked_for_close) {
+          close(stream->con->socket);
+          list_remove(tcpls->streams, stream);
+          stream_free(stream);
+        }
+      }
+      tcpls->streams_marked_for_close = 0;
+    }
   }
   else if (ret+tcpls->send_start < tcpls->sendbuf->off) {
     tcpls->send_start += ret;
@@ -774,7 +877,16 @@ ssize_t tcpls_receive(ptls_t *tls, void *buf, size_t nbytes, struct timeval *tv)
     // get the right  aead context matching the stream id
     // This is done for compabitility with original PTLS's unit tests
     tcpls->tls->traffic_protection.dec.aead = stream->aead_dec;
-    if ((ptls_receive(tls, &decryptbuf, input, (size_t*)&ret) != 0)) {
+    size_t input_off = 0;
+    size_t input_size = ret;
+    size_t consumed;
+    do  {
+      consumed = input_size - input_off;
+      ret = ptls_receive(tls, &decryptbuf, input + input_off, &consumed);
+      input_off += consumed;
+    } while (ret == 0 && input_off < input_size);
+
+    if (ret != 0) {
       ptls_buffer_dispose(&decryptbuf);
       list_free(socklist);
       return ret;
@@ -1035,14 +1147,14 @@ static tcpls_stream_t *stream_helper_new(tcpls_t *tcpls, connect_info_t *con) {
  * Note, currently we implement 1 stream per TCP connection
  */
 
-static int stream_send_control_message(tcpls_t *tcpls, tcpls_stream_t *stream,
+static int stream_send_control_message(tcpls_t *tcpls, ptls_aead_context_t *aead,
     const void *inputinfo, tcpls_enum_t tcpls_message, uint32_t message_len) {
-  uint8_t input[message_len];
+  uint8_t input[message_len+sizeof(tcpls_message)];
   memcpy(input, &tcpls_message, sizeof(tcpls_message));
   memcpy(input+sizeof(tcpls_message), inputinfo, message_len);
   return buffer_push_encrypted_records(tcpls->sendbuf,
       PTLS_CONTENT_TYPE_TCPLS_OPTION, input,
-      message_len+sizeof(tcpls_message), stream->aead_enc);
+      message_len+sizeof(tcpls_message), aead);
 }
 
 static int  tcpls_init_context(ptls_t *ptls, const void *data, size_t datalen,
@@ -1193,7 +1305,7 @@ int handle_tcpls_extension_option(ptls_t *ptls, tcpls_enum_t type,
          return -1;
        }
        /** Note, we current assume only one stream per address */
-       close(ptls->tcpls->socket_rcv);
+       close(stream->con->socket);
        list_remove(ptls->tcpls->streams, stream);
        stream_free(stream);
        //TODO make an application callback
@@ -1206,6 +1318,8 @@ int handle_tcpls_extension_option(ptls_t *ptls, tcpls_enum_t type,
         //order
         streamid_t streamid = (streamid_t) *input;
         connect_info_t *con = get_con_info_from_socket(ptls->tcpls, ptls->tcpls->socket_rcv);
+        /** an absolute number that should not reduce at stream close */
+        ptls->tcpls->nbr_of_peer_streams_attached++;
         tcpls_stream_t *stream = stream_new(ptls, streamid, con, 0);
         stream->stream_usable = 1;
         stream->need_sending_attach_event = 0;
@@ -1213,8 +1327,6 @@ int handle_tcpls_extension_option(ptls_t *ptls, tcpls_enum_t type,
         if (!stream) {
           return PTLS_ERROR_NO_MEMORY;
         }
-        /** an absolute number that should not reduce at stream close */
-        ptls->tcpls->nbr_of_peer_streams_attached++;
         list_add(ptls->tcpls->streams, stream);
         return 0;
       }
@@ -1283,7 +1395,6 @@ int handle_tcpls_record(ptls_t *tls, struct st_ptls_record_t *rec)
         goto Exit;
       memcpy(tls->tcpls_buf->base+tls->tcpls_buf->off, rec->fragment+sizeof(type)+4, rec->length-sizeof(type)-4);
       tls->tcpls_buf->off += rec->length - sizeof(type)-4;
-      
       if (ret)
         goto Exit;
       if (tls->tcpls_buf->off == optsize) {
@@ -1336,34 +1447,44 @@ static int setlocal_bpf_cc(ptls_t *ptls, const uint8_t *prog, size_t proglen) {
 /**
  * Compute the value IV to use for the next stream.
  *
- * It allows the counter to start at 0, and MIN_LOWIV_STREAM_INCREASE prevent
- * the AES counter to have a chance to overlap between calls.
+ * It allows the counter to start at 0 using the same key for all streams, and
+ * MIN_LOWIV_STREAM_INCREASE prevent the AES counter to have a chance to overlap
+ * between calls.
+ *
+ * TODO debug
  **/
 
-static void stream_derive_new_aead_iv(ptls_t *tls, uint8_t *iv, int iv_size, int is_ours) {
+static void stream_derive_new_aead_iv(ptls_t *tls, uint8_t *iv, int iv_size,
+    streamid_t streamid, int is_ours) {
+  return;
   int mult;
   /** server next_stream_id starts at 2**31 */
-  if (tls->is_server)
-    mult = tls->tcpls->next_stream_id-2147483648;
-  else
-    mult = tls->tcpls->next_stream_id;
+  if (tls->is_server && is_ours) {
+    mult = streamid-2147483648-1;
+  }
+  else {
+    mult = streamid-1;
+  }
   /** TLS 1.3 supports ciphers with two different IV size so far */
-  if (iv_size == 96) {
+  if (iv_size == 12) {
     uint32_t low_iv = (uint32_t) iv[8];
     /** if over uin32 MAX; it should properly wrap arround */
+    printf("low iv: %u; mult: %d\n", low_iv, mult);
     low_iv += mult * MIN_LOWIV_STREAM_INCREASE;
-    if (tls->is_server) {
-      /*set the leftmost bit to 1*/
-      low_iv |= (1 << 31);
-    }
-    else {
+    printf("low iv: %u; mult: %d\n", low_iv, mult);
+    /*if (tls->is_server) {*/
+      /*[>set the leftmost bit to 1<]*/
+      /*low_iv |= (1 << 31);*/
+    /*}*/
+    /*else {*/
       /* client initiated streams would have the left most bit of the low_iv
        * part always to 0 */
-      low_iv |= (0 << 31);
-    }
+      /*low_iv |= (0 << 31);*/
+    /*}*/
     memcpy(&iv[8], &low_iv, 4);
   }
-  else if (iv_size == 128) {
+  /** 16 bytes IV */
+  else if (iv_size == 16) {
     uint64_t low_iv = (uint64_t) iv[8];
     low_iv += mult * MIN_LOWIV_STREAM_INCREASE;
     if (tls->is_server)
@@ -1372,27 +1493,43 @@ static void stream_derive_new_aead_iv(ptls_t *tls, uint8_t *iv, int iv_size, int
       low_iv |= (0UL << 63);
     memcpy(&iv[8], &low_iv, 8);
   }
+  else {
+    /** TODO; change the return type; and return -1 here */
+    printf("THAT MUST NOT HAPPEN :) \n");
+  }
 }
 
+/**
+ * Derive new aead context for the new stream; i.e., currently use a tweak on
+ * the IV but the same key
+ *
+ * Using a different salt to derive another secret and then derive new keys/IVs
+ * is another possible solution
+ *
+ * Note: less keys => better security
+ *
+ */
 
+// TODO FIXBUG IV derivation
 static int new_stream_derive_aead_context(ptls_t *tls, tcpls_stream_t *stream, int is_ours) {
   
-  stream->aead_enc = (ptls_aead_context_t *) malloc(tls->cipher_suite->aead->context_size);
+  struct st_ptls_traffic_protection_t *ctx_enc = &tls->traffic_protection.enc;
+  struct st_ptls_traffic_protection_t *ctx_dec = &tls->traffic_protection.dec;
+  stream->aead_enc = ptls_aead_new(tls->cipher_suite->aead,
+      tls->cipher_suite->hash, 1, ctx_enc->secret,
+      tls->ctx->hkdf_label_prefix__obsolete);
   if (!stream->aead_enc)
     return PTLS_ERROR_NO_MEMORY;
-  memcpy(stream->aead_enc, &tls->traffic_protection.enc, sizeof(tls->traffic_protection.enc));
-  /** restart the counter */
-  stream->aead_enc->seq = 0;
   /** now change the lower half bits of the IV to avoid collisions */
   stream_derive_new_aead_iv(tls, stream->aead_enc->static_iv,
-      tls->cipher_suite->aead->iv_size, is_ours);
-  stream->aead_dec = (ptls_aead_context_t *) malloc(tls->cipher_suite->aead->context_size);
+      tls->cipher_suite->aead->iv_size, stream->streamid, is_ours);
+  stream->aead_dec = ptls_aead_new(tls->cipher_suite->aead,
+      tls->cipher_suite->hash, 0, ctx_dec->secret,
+      tls->ctx->hkdf_label_prefix__obsolete);
   if (stream->aead_dec)
     return PTLS_ERROR_NO_MEMORY;
-  memcpy(stream->aead_dec, &tls->traffic_protection.dec, sizeof(tls->traffic_protection.dec));
-  stream->aead_dec->seq = 0;
   stream_derive_new_aead_iv(tls, stream->aead_dec->static_iv,
-      tls->cipher_suite->aead->iv_size, is_ours);
+      tls->cipher_suite->aead->iv_size, stream->streamid, is_ours);
   return 0;
 }
 

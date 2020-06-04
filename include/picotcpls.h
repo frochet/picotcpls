@@ -89,7 +89,11 @@ typedef struct st_tcpls_stream {
    * stream is usable
    */
   unsigned stream_usable : 1;
-  
+
+  /**
+   * the stream should be cleaned up the next time tcpls_send is called
+   */
+  unsigned marked_for_close : 1;
   /** end positio of the stream control event message in the current sending
    * buffer*/
   int send_stream_attach_in_sendbuf_pos;
@@ -137,6 +141,9 @@ struct st_tcpls_t {
   list_t *streams;
   /** We have stream control event to check */
   unsigned check_stream_attach_sent : 1;
+  /** We have stream marked for close; close them after sending the control
+   * message  */
+  unsigned streams_marked_for_close : 1;
   /** Contains the state of connected src and dest addresses */
   list_t *connect_infos;
  
@@ -165,6 +172,8 @@ void *tcpls_new();
 int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
     struct timeval *timeout);
 
+int tcpls_handshake(ptls_t *tls);
+
 int tcpls_add_v4(ptls_t *tls, struct sockaddr_in *addr, int is_primary, int
     settopeer, int is_ours);
 
@@ -173,9 +182,9 @@ int tcpls_add_v6(ptls_t *tls, struct sockaddr_in6 *addr, int is_primary, int
 
 uint32_t tcpls_stream_new(ptls_t *tls, struct sockaddr *src, struct sockaddr *addr);
 
-int tcpls_streams_attach(ptls_t *tls, int sendnow);
+int tcpls_streams_attach(ptls_t *tls, streamid_t streamid, int sendnow);
 
-int tcpls_stream_close(ptls_t *tls, streamid_t streamid);
+int tcpls_stream_close(ptls_t *tls, streamid_t streamid, int sendnow);
 
 /**
  * tcpls_send can be called whether or not tcpls_stream_new has been called before
