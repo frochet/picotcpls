@@ -53,6 +53,10 @@
 #endif
 #include "util.h"
 
+#define NB_ADDRESS_MAX 		15
+#define ADDRESS_SIZE   		15
+#define V6_ADDRESS_SIZE   	40
+
 /* sentinels indicating that the endpoint is in benchmark mode */
 static const char input_file_is_benchmark[] = "is:benchmark";
 
@@ -69,18 +73,175 @@ static void shift_buffer(ptls_buffer_t *buf, size_t delta)
 struct tcpls_options{
 	int timeoutval;
 	unsigned int second;
-	struct sockaddr_in addr;
-	struct sockaddr_in addr2;
-    	struct sockaddr_in6 addr6;
-	struct sockaddr_in ours_addr;
-    	struct sockaddr_in6 ours_addr6;
+	list_t *peer_v4_addrs;
+	list_t *peer_v6_addrs;
+	list_t *ours_v4_addrs;
+	list_t *ours_v6_addrs;
+	unsigned int nb_peer_v4_addrs;
+	unsigned int nb_peer_v6_addrs;
+	unsigned int nb_ours_v4_addrs;
+	unsigned int nb_ours_v6_addrs;
 	unsigned int timeout:1;
-	unsigned int v4_1:1;
-	unsigned int v4_2:1;
-	unsigned int v6:1;
+	unsigned int peer_v4:1;
 	unsigned int ours_v4:1;
 	unsigned int ours_v6:1;
+	unsigned int peer_v6:1;
 };
+
+static void init_tcpls_options(struct tcpls_options *tcpls_options){
+   tcpls_options->timeoutval = -1;
+   tcpls_options->second = -1;
+   tcpls_options->peer_v4_addrs = NULL;
+   tcpls_options->peer_v6_addrs = NULL;
+   tcpls_options->ours_v4_addrs = NULL;
+   tcpls_options->ours_v6_addrs = NULL;
+   tcpls_options->nb_peer_v4_addrs = 0;
+   tcpls_options->nb_peer_v6_addrs = 0;
+   tcpls_options->nb_ours_v4_addrs = 0;
+   tcpls_options->nb_ours_v6_addrs = 0;
+   tcpls_options->timeout = 0;
+   tcpls_options->peer_v4 = 0;
+   tcpls_options->ours_v4 = 0;
+   tcpls_options->ours_v6 = 0;
+   tcpls_options->peer_v6 = 0;
+   return;
+};
+
+static int handle_addrs(struct tcpls_options *tcpls_options, 
+	unsigned int v4 , unsigned int ours,tcpls_t *tcpls, const char *port){
+	int i, n;
+	list_t *l;
+	struct sockaddr_in sockaddr;
+	struct sockaddr_in6 sockaddr6;
+	switch((v4 << 1) | ours){
+		case 0: 
+			n = tcpls_options->nb_peer_v6_addrs;
+			l = tcpls_options->peer_v6_addrs;
+			tcpls_options->peer_v6 = 0;
+			break;
+		case 1:
+			n = tcpls_options->nb_ours_v6_addrs;
+			l = tcpls_options->ours_v6_addrs;
+			tcpls_options->ours_v6 = 0;
+			break;
+
+		case 2:
+			n = tcpls_options->nb_peer_v4_addrs;
+			l = tcpls_options->peer_v4_addrs;
+			tcpls_options->peer_v4 = 0;
+			break;
+		case 3:
+			n = tcpls_options->nb_ours_v4_addrs;
+			l = tcpls_options->ours_v4_addrs;
+			tcpls_options->ours_v4 = 0;
+			break;
+		default:
+			return -1;
+	}
+
+
+	for(i = 0; i < n; i++){
+		char *s = list_get(l, i);
+		sockaddr.sin_port = htons(atoi(port));
+		if(v4){
+			sockaddr.sin_family = AF_INET;
+			if(inet_pton(AF_INET, s, &sockaddr.sin_addr)!=1){
+				list_free(l);
+				return -1;
+			}
+			if(tcpls_add_v4(tcpls->tls, &sockaddr, 0, ~ours, ours))
+				return -1;	
+		}
+		else{
+			if(inet_pton(AF_INET6, s, &sockaddr6.sin6_addr)!=1){
+				list_free(l);
+				return -1;
+			}
+			sockaddr6.sin6_family = AF_INET6;
+			if(tcpls_add_v6(tcpls->tls, &sockaddr6, 0, ~ours, ours))
+				return -1;
+			
+		}
+	}
+	return 0;
+}
+
+static int handle_tcpls_options(struct tcpls_options *tcpls_options, 
+		tcpls_t *tcpls, const char *port){
+	int err;
+	if(tcpls_options->ours_v6)
+		if((err = handle_addrs(tcpls_options, 0, 1,tcpls, port)))
+			return -1;
+	if(tcpls_options->ours_v4)
+		if((err = handle_addrs(tcpls_options, 1, 1,tcpls, port)))
+			return -1;
+	if(tcpls_options->peer_v6)
+		if((err = handle_addrs(tcpls_options, 0, 0,tcpls, port)))
+			return -1;
+	if(tcpls_options->peer_v4)
+		if((err = handle_addrs(tcpls_options, 1, 0,tcpls, port)))
+			return -1;
+	return 0;
+}
+
+
+static int get_tcpls_addrs(struct tcpls_options *tcpls_options, unsigned int v4,
+	unsigned int ours, char *optarg){
+	int n = (v4==1) ? 15 : 40;
+ 	unsigned int *m;
+	char *addr;
+	list_t *l = new_list(sizeof(char)*n, NB_ADDRESS_MAX);
+	addr = malloc(sizeof(char)*ADDRESS_SIZE);
+	addr = strtok(optarg, ",");
+	if(addr == NULL)
+		addr = optarg;
+	switch((v4 << 1) | ours){
+		case 0: 
+			tcpls_options->peer_v6_addrs = l;
+			tcpls_options->peer_v6 = 1;
+			tcpls_options->nb_peer_v6_addrs = 0;
+			m = &tcpls_options->nb_peer_v6_addrs;
+			break;
+		case 1:
+			tcpls_options->ours_v6_addrs = l;
+			tcpls_options->ours_v6 = 1;
+			tcpls_options->nb_ours_v6_addrs = 0;
+			m = &tcpls_options->nb_ours_v6_addrs;
+			break;
+
+		case 2:
+			tcpls_options->peer_v4_addrs = l;
+			tcpls_options->peer_v4 = 1;
+			tcpls_options->nb_peer_v4_addrs = 0;
+			m = &tcpls_options->nb_peer_v4_addrs;
+			break;
+		case 3:
+			tcpls_options->ours_v4_addrs = l;
+			tcpls_options->ours_v4 = 1;
+			tcpls_options->nb_ours_v4_addrs = 0;
+			m = &tcpls_options->nb_ours_v4_addrs;
+			break;
+		default:
+			return -1;
+	}
+	if(addr==NULL){
+		list_free(l);
+		return -1;
+	}
+	while(addr!=NULL){
+		if(*m >= NB_ADDRESS_MAX){
+			fprintf(stderr, "Number of address should not "
+						"exceed %d\n", NB_ADDRESS_MAX);
+			list_free(l);
+			return -1;
+		}
+		*m = *m + 1;
+		list_add(l, addr);
+		addr = strtok(NULL, ",");
+	}
+
+	return 0;
+} 
 
 static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server_name, const char *input_file,
                              ptls_handshake_properties_t *hsprop, int request_key_update, 
@@ -329,15 +490,7 @@ static int run_server(struct sockaddr *sa, socklen_t salen, ptls_context_t *ctx,
 {
     int listen_fd, conn_fd, on = 1;
     
-    /*if(ctx->support_tcpls_options){
-	struct timeval timeout;
-	timeout.tv_sec = 150;
-        timeout.tv_usec = 0;
-        printf("trying connected\n");
-	int err = tcpls_connect(tcpls->tls, NULL, NULL, &timeout);
-	assert(err);
-	printf("connected\n");
-    }*/
+    printf("connect to server\n");
 
     if ((listen_fd = socket(sa->sa_family, SOCK_STREAM, 0)) == -1) {
         perror("socket(2) failed");
@@ -479,9 +632,10 @@ int main(int argc, char **argv)
     int family = 0;
     struct tcpls_options tcpls_options;
     tcpls_t *tcpls;
-    char *addr1, *addr2;
-
+    char *addr, *addrv6;
+    int err;
     
+    init_tcpls_options(&tcpls_options);
 
     while ((ch = getopt(argc, argv, "46abBC:c:i:Ik:nN:es:SE:K:l:y:vhtd:w:W:z:Z:")) != -1) {
         switch (ch) {
@@ -625,48 +779,31 @@ int main(int argc, char **argv)
 		tcpls_options.timeout = 1;
 		break;
 	case 'w':
-		addr1 = malloc(sizeof(char)*15);
-		addr2 = malloc(sizeof(char)*15);
-		addr1 = strtok(optarg, ",");
-		addr2 = strtok(NULL, ",");
-		if(addr1!=NULL){
-			if(inet_pton(AF_INET, addr1, &tcpls_options.addr.sin_addr)!=1){
-				usage(argv[0]);
-            			exit(0);
-			}
-			tcpls_options.v4_1 = 1;
-		}
-		if(addr2!=NULL){
-			if(inet_pton(AF_INET, addr2, &tcpls_options.addr2.sin_addr)!=1){
-				usage(argv[0]);
-            			exit(0);
-			}
-			tcpls_options.v4_2 = 1;
+		if(get_tcpls_addrs(&tcpls_options, 1, 0, optarg)){
+			usage(argv[0]);
+            		exit(0);
 		}
 		break;
 
 	case 'W':
-		if(inet_pton(AF_INET6, optarg, &tcpls_options.addr6.sin6_addr)!=1){
+		if(get_tcpls_addrs(&tcpls_options, 1, 1, optarg)){
 			usage(argv[0]);
             		exit(0);
 		}
-		tcpls_options.v6 = 1;
 		break;
 
 	case 'z':
-		if(inet_pton(AF_INET, optarg, &tcpls_options.ours_addr.sin_addr)!=1){
+		if(get_tcpls_addrs(&tcpls_options, 0, 0, optarg)){
 			usage(argv[0]);
             		exit(0);
 		}
-		tcpls_options.ours_v4 = 1;
 		break;
 
 	case 'Z':
-		if(inet_pton(AF_INET6, optarg, &tcpls_options.ours_addr6.sin6_addr)!=1){
+		if(get_tcpls_addrs(&tcpls_options, 0, 1, optarg)){
 			usage(argv[0]);
             		exit(0);
 		}
-		tcpls_options.ours_v6 = 1;
 		break;
         default:
             exit(1);
@@ -729,45 +866,9 @@ int main(int argc, char **argv)
    
     if(ctx.support_tcpls_options){
 	tcpls = tcpls_new(&ctx, is_server);
-        if(tcpls_options.ours_v4){
-		tcpls_options.ours_addr.sin_port = htons(atoi(port));
-		tcpls_options.ours_addr.sin_family = AF_INET;
-		if(tcpls_add_v4(tcpls->tls, &tcpls_options.ours_addr, 1, 0, 1))
-			exit(1);	
-		assert(tcpls->ours_v4_addr_llist);
-		assert(tcpls->ours_v4_addr_llist->is_primary == 1);
-	}
 
-	if(tcpls_options.ours_v6){
-		tcpls_options.ours_addr6.sin6_port = htons(atoi(port));
-		tcpls_options.ours_addr6.sin6_family = AF_INET6;
-		if(tcpls_add_v6(tcpls->tls, &tcpls_options.ours_addr6, 1, 0, 1))
-			exit(1);	
-		assert(tcpls->ours_v6_addr_llist);
-		assert(tcpls->ours_v6_addr_llist->is_primary == 1);
-	}
-
-	if(tcpls_options.v4_1){
-		tcpls_options.addr.sin_port = htons(atoi(port));
-		tcpls_options.addr.sin_family = AF_INET;
-		if(tcpls_add_v4(tcpls->tls, &tcpls_options.addr, 0, 1, 0))
-			exit(1);
-		tcpls_options.v4_1 = 0;
-	}
-	if(tcpls_options.v4_2){
-		tcpls_options.addr2.sin_port = htons(atoi(port));
-		tcpls_options.addr2.sin_family = AF_INET;
-		if(tcpls_add_v4(tcpls->tls, &tcpls_options.addr2, 0, 1, 0))
-			exit(1);
-		tcpls_options.v4_2 = 0;
-	}
-	if(tcpls_options.v6){
-		tcpls_options.addr6.sin6_port = htons(atoi(port));
-		tcpls_options.addr6.sin6_family = AF_INET6;
-		if(tcpls_add_v6(tcpls->tls, &tcpls_options.addr6, 0, 1, 0))
-			exit(1);
-		tcpls_options.v6 = 0;
-	}
+	if((err=handle_tcpls_options(&tcpls_options,tcpls, port)))
+		exit(1);
     }
 
    

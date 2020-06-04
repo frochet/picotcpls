@@ -198,8 +198,9 @@ int tcpls_add_v4(ptls_t *tls, struct sockaddr_in *addr, int is_primary, int
       tcpls->ours_v4_addr_llist = new_v4;
     else
       tcpls->v4_addr_llist = new_v4;
-    if (settopeer)
+    if (settopeer){
       return add_v4_to_options(tcpls, 1);
+    }
     return 0;
   }
   int n = 0;
@@ -1306,16 +1307,19 @@ Exit:
 }
 
 static int setlocal_usertimeout(ptls_t *ptls, int val) {
-  printf("should set  local user time out %d %d\n", val, ptls->tcpls->socket_primary);
+  printf("should set  local user time out %d %d %d %d\n", 
+	val, ptls->tcpls->socket_primary, ptls->tcpls->socket_rcv, ptls->tcpls->nbr_tcp_streams);
   struct timeval timeout;      
   timeout.tv_sec = val;
   timeout.tv_usec = 0;
 
-  if (setsockopt (ptls->tcpls->socket_primary, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,
+  if(ptls->tcpls->socket_rcv == 0)
+	return(0);
+  if (setsockopt (ptls->tcpls->socket_rcv, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,
                 sizeof(timeout)) < 0)
        return -1;
 
-  if (setsockopt (ptls->tcpls->socket_primary, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout,
+  if (setsockopt (ptls->tcpls->socket_rcv, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout,
                 sizeof(timeout)) < 0)
         return -1;
   return 0;

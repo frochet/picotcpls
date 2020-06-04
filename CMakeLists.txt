@@ -6,6 +6,9 @@ PROJECT(picotls)
 FIND_PACKAGE(PkgConfig REQUIRED)
 INCLUDE(cmake/dtrace-utils.cmake)
 
+SET(OPENSSL_INCLUDE_DIR
+    /usr/include/)
+
 CHECK_DTRACE(${PROJECT_SOURCE_DIR}/picotls-probes.d)
 OPTION(WITH_DTRACE "use USDT (userspace Dtrace probes)" ${HAVE_DTRACE})
 IF (WITH_DTRACE)
