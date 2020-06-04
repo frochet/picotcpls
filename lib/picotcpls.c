@@ -306,16 +306,13 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
     while (ours_current_v4 || ours_current_v6) {
       while (current_v4 || current_v6) {
         if (ours_current_v4 && current_v4) {
-          if (handle_connect(tcpls, ours_current_v4, current_v4, NULL, NULL, AF_INET, &nfds, &maxfds, &coninfo, &wset) < 0) {
-	    printf("v4\n");
+          if (handle_connect(tcpls, ours_current_v4, current_v4, NULL, NULL, AF_INET, &nfds, &maxfds, &coninfo, &wset) < 0) 
             return -1;
-          }
+          
         }
         if (ours_current_v6 && current_v6) {
-          if(handle_connect(tcpls, NULL, NULL, ours_current_v6, current_v6, AF_INET6, &nfds, &maxfds, &coninfo, &wset) < 0) {
-            printf("v6\n");
+          if(handle_connect(tcpls, NULL, NULL, ours_current_v6, current_v6, AF_INET6, &nfds, &maxfds, &coninfo, &wset) < 0) 
             return -1;
-          }
         }
         /** move forward */
         if (current_v4)
@@ -467,13 +464,17 @@ int tcpls_handshake(ptls_t *tls) {
   ptls_buffer_t sendbuf;
   int ret;
   connect_info_t *con = get_primary_con_info(tcpls);
-  if (!con)
+  if (!con){
+    printf("toto\n");
     goto Exit;
+  }
   do {
     while ((rret = read(con->socket, recvbuf, sizeof(recvbuf))) == -1 && errno == EINTR)
         ;
-    if (rret == 0)
+    if (rret == 0){
+      printf("tutu\n");
       goto Exit;
+    }
     roff = 0;
     do {
       ptls_buffer_init(&sendbuf, "", 0);
@@ -481,7 +482,8 @@ int tcpls_handshake(ptls_t *tls) {
       ret = ptls_handshake(tls, &sendbuf, recvbuf + roff, &consumed, NULL);
       roff += consumed;
       if ((ret == 0 || ret == PTLS_ERROR_IN_PROGRESS) && sendbuf.off != 0) {
-        if ((rret = send(con->socket, sendbuf.base, sendbuf.off, 0)) < 0) {
+        if ((rret = send(con->socket, sendbuf.base, sendbuf.off, 0)) < 0){ 
+	   printf("tata\n");
            goto Exit;
         }
       }
@@ -1418,8 +1420,6 @@ Exit:
 }
 
 static int setlocal_usertimeout(ptls_t *ptls, int val) {
-  printf("should set  local user time out %d %d %d %d\n", 
-	val, ptls->tcpls->socket_primary, ptls->tcpls->socket_rcv, ptls->tcpls->nbr_tcp_streams);
   struct timeval timeout;      
   timeout.tv_sec = val;
   timeout.tv_usec = 0;
@@ -1692,7 +1692,6 @@ static void _set_primary(tcpls_t *tcpls) {
   }
   if (has_primary) {
     tcpls->socket_primary = primary_con->socket;
-    printf("primary 1 %d\n", tcpls->socket_primary);
     return;
   }
  
