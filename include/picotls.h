@@ -241,6 +241,8 @@ extern "C" {
 #define PTLS_EXTENSION_TYPE_ENCRYPTED_TCP_OPTIONS_USERTIMEOUT 101
 #define PTLS_EXTENSION_TYPE_ENCRYPTED_MULTIHOMING_v4 102
 #define PTLS_EXTENSION_TYPE_ENCRYPTED_MULTIHOMING_v6 103
+#define PTLS_EXTENSION_TYPE_ENCRYPTED_CONNID 104
+#define PTLS_EXTENSION_TYPE_ENCRYPTED_COOKIE 105
 
 #define PTLS_PROTOCOL_VERSION_TLS13_FINAL 0x0304
 #define PTLS_PROTOCOL_VERSION_TLS13_DRAFT26 0x7f1a
@@ -849,7 +851,7 @@ typedef struct st_ptls_log_event_t {
 #pragma warning(push)
 #pragma warning(disable : 4201)
 #endif
-  typedef struct st_ptls_handshake_properties_t {
+  struct st_ptls_handshake_properties_t {
     union {
       struct {
         /**
@@ -879,6 +881,10 @@ typedef struct st_ptls_log_event_t {
          * negotiate the key exchange method before sending key_share
          */
         unsigned negotiate_before_key_exchange : 1;
+        /**
+         * if 1, we will perform a mpjoin clientHello
+         */
+        unsigned mpjoin : 1;
         /**
          * ESNIKeys (the value of the TXT record, after being base64-"decoded")
          */
@@ -928,7 +934,7 @@ typedef struct st_ptls_log_event_t {
      * an optional callback that reports the extensions being collected
      */
     int (*collected_extensions)(ptls_t *tls, struct st_ptls_handshake_properties_t *properties, ptls_raw_extension_t *extensions);
-  } ptls_handshake_properties_t;
+  };
 #ifdef _WINDOWS
 #pragma warning(pop)
 #endif
