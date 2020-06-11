@@ -57,6 +57,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <arpa/inet.h>
 #include "picotypes.h"
 #include "containers.h"
 #include "picotls.h"
@@ -212,9 +213,8 @@ int tcpls_add_v4(ptls_t *tls, struct sockaddr_in *addr, int is_primary, int
       tcpls->ours_v4_addr_llist = new_v4;
     else
       tcpls->v4_addr_llist = new_v4;
-    if (settopeer){
+    if (settopeer)
       return add_v4_to_options(tcpls, 1);
-    }
     return 0;
   }
   int n = 0;
@@ -318,13 +318,14 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
     while (ours_current_v4 || ours_current_v6) {
       while (current_v4 || current_v6) {
         if (ours_current_v4 && current_v4) {
-          if (handle_connect(tcpls, ours_current_v4, current_v4, NULL, NULL, AF_INET, &nfds, &maxfds, &coninfo, &wset) < 0) 
+          if (handle_connect(tcpls, ours_current_v4, current_v4, NULL, NULL, AF_INET, &nfds, &maxfds, &coninfo, &wset) < 0) {
             return -1;
-          
+          }
         }
         if (ours_current_v6 && current_v6) {
-          if(handle_connect(tcpls, NULL, NULL, ours_current_v6, current_v6, AF_INET6, &nfds, &maxfds, &coninfo, &wset) < 0) 
+          if(handle_connect(tcpls, NULL, NULL, ours_current_v6, current_v6, AF_INET6, &nfds, &maxfds, &coninfo, &wset) < 0) {
             return -1;
+          }
         }
         /** move forward */
         if (current_v4)
@@ -450,6 +451,8 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
           con->connect_time.tv_sec = sec;
           con->connect_time.tv_usec = rtt - sec*(uint64_t)1000000;
           con->state = CONNECTED;
+	  printaddr(&con->src->addr.sin_addr);
+	  printaddr(&con->dest->addr.sin_addr);
           int flags = fcntl(con->socket, F_GETFL);
           flags &= ~O_NONBLOCK;
           fcntl(con->socket, F_SETFL, flags);
@@ -498,29 +501,6 @@ int tcpls_handshake(ptls_t *tls, int socket, ptls_handshake_properties_t *proper
   tcpls_t *tcpls = tls->tcpls;
   if (!tcpls)
     return -1;
-<<<<<<< HEAD
-  uint8_t recvbuf[8192];
-  ssize_t roff, rret;
-  ptls_buffer_t sendbuf;
-  int ret;
-  connect_info_t *con = get_primary_con_info(tcpls);
-  if (!con)
-    goto Exit;
-  do {
-    while ((rret = read(con->socket, recvbuf, sizeof(recvbuf))) == -1 && errno == EINTR)
-        ;
-    if (rret == 0)
-      goto Exit;
-    roff = 0;
-    do {
-      ptls_buffer_init(&sendbuf, "", 0);
-      size_t consumed = rret - roff;
-      ret = ptls_handshake(tls, &sendbuf, recvbuf + roff, &consumed, NULL);
-      roff += consumed;
-      if ((ret == 0 || ret == PTLS_ERROR_IN_PROGRESS) && sendbuf.off != 0) {
-        if ((rret = send(con->socket, sendbuf.base, sendbuf.off, 0)) < 0){ 
-           goto Exit;
-=======
   /** Get the right socket */
   if (!tls->is_server && !socket) {
     connect_info_t *con = get_primary_con_info(tcpls);
@@ -533,11 +513,12 @@ int tcpls_handshake(ptls_t *tls, int socket, ptls_handshake_properties_t *proper
   ptls_buffer_t sendbuf;
   /** Sends the client hello (or the mpjoin client hello */
   ptls_buffer_init(&sendbuf, "", 0);
-  if ((ret = ptls_handshake(tls, &sendbuf, NULL, NULL, properties)) == PTLS_ERROR_IN_PROGRESS) {
+  if (!tls->is_server && (ret = ptls_handshake(tls, &sendbuf, NULL, NULL, properties)) == PTLS_ERROR_IN_PROGRESS) {
     rret = 0;
     while (rret < sendbuf.off) {
-      if ((ret = send(socket, sendbuf.base, sendbuf.off, 0)) < 0)
+      if ((ret = send(socket, sendbuf.base, sendbuf.off, 0)) < 0){
           goto Exit;
+      }
       rret += ret;
     }
     if (properties && properties->client.mpjoin) {
@@ -560,9 +541,9 @@ int tcpls_handshake(ptls_t *tls, int socket, ptls_handshake_properties_t *proper
         ret = ptls_handshake(tls, &sendbuf, recvbuf + roff, &consumed, properties);
         roff += consumed;
         if ((ret == 0 || ret == PTLS_ERROR_IN_PROGRESS) && sendbuf.off != 0) {
-          if ((rret = send(socket, sendbuf.base, sendbuf.off, 0)) < 0) 
+          if ((rret = send(socket, sendbuf.base, sendbuf.off, 0)) < 0) {
              goto Exit;
->>>>>>> fda3d42dc36bda930a3bbe279386b87fab3a2a1f
+          }
         }
         ptls_buffer_dispose(&sendbuf);
       } while (ret == PTLS_ERROR_IN_PROGRESS && rret != roff);
@@ -571,6 +552,33 @@ int tcpls_handshake(ptls_t *tls, int socket, ptls_handshake_properties_t *proper
     /** TODO If multiple addresses; we should send them now? */
     return 0;
   }
+
+  do {
+	  uint8_t recvbuf[8192];
+     sendbuf.off = 0;
+     ssize_t roff;
+    // read data from socket
+    while ((rret = read(socket, recvbuf, sizeof(recvbuf)) == -1 && errno == EINTR))
+ 			;
+	 
+    if (rret == 0)
+        goto Exit;
+    roff = 0;
+    do {
+        ptls_buffer_init(&sendbuf, "", 0);
+        size_t consumed = rret - roff;
+        ret = ptls_handshake(tls, &sendbuf, recvbuf + roff, &consumed, NULL);
+        roff += consumed;
+        if ((ret == 0 || ret == PTLS_ERROR_IN_PROGRESS) && sendbuf.off != 0) {
+            if (!send(socket, sendbuf.base, sendbuf.off,0)) {
+                ptls_buffer_dispose(&sendbuf);
+                goto Exit;
+            }
+        }
+        ptls_buffer_dispose(&sendbuf);
+    } while (ret == PTLS_ERROR_IN_PROGRESS && rret != roff);
+	} while (ret == PTLS_ERROR_IN_PROGRESS);
+	return ret;
 Exit:
   ptls_buffer_dispose(&sendbuf);
   return -1;
@@ -1202,7 +1210,6 @@ static int handle_connect(tcpls_t *tcpls, tcpls_v4_addr_t *src, tcpls_v4_addr_t
         coninfo->is_primary = 1;
     }
   }
-
   if (coninfo->state == CLOSED) {
     /** we can connect */
     if (!coninfo->socket) {
@@ -1573,19 +1580,6 @@ Exit:
 }
 
 static int setlocal_usertimeout(ptls_t *ptls, int val) {
-  struct timeval timeout;      
-  timeout.tv_sec = val;
-  timeout.tv_usec = 0;
-
-  if(ptls->tcpls->socket_rcv == 0)
-	return(0);
-  if (setsockopt (ptls->tcpls->socket_rcv, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout,
-                sizeof(timeout)) < 0)
-       return -1;
-
-  if (setsockopt (ptls->tcpls->socket_rcv, SOL_SOCKET, SO_SNDTIMEO, (char *)&timeout,
-                sizeof(timeout)) < 0)
-        return -1;
   return 0;
 }
 
@@ -1864,7 +1858,7 @@ static void _set_primary(tcpls_t *tcpls) {
     tcpls->socket_primary = primary_con->socket;
     return;
   }
- 
+  
   tcpls->socket_primary = primary_con->socket;
   /* set the primary bit to the addresses */
   if (primary_con->src)
@@ -1941,4 +1935,10 @@ void tcpls_free(tcpls_t *tcpls) {
 #undef FREE_ADDR_LLIST
   ptls_free(tcpls->tls);
   free(tcpls);
+}
+
+void printaddr(struct in_addr *addr){
+	char addr_str[INET_ADDRSTRLEN];
+  	inet_ntop( AF_INET, addr, addr_str, sizeof( addr_str ));
+	fprintf(stderr,  "address : %s\n", addr_str);
 }

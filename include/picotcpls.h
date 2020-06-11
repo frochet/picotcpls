@@ -230,4 +230,6 @@ int tcpls_failover_signal(tcpls_t *tcpls, ptls_buffer_t *sendbuf);
 
 void ptls_tcpls_options_free(tcpls_t *tcpls);
 
+void printaddr(struct in_addr *addr);
+
 #endif

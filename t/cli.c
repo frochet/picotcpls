@@ -62,7 +62,7 @@ static const char input_file_is_benchmark[] = "is:benchmark";
 
 static void shift_buffer(ptls_buffer_t *buf, size_t delta)
 {
-    if (delta != 0) {
+   if (delta != 0) {
         assert(delta <= buf->off);
         if (delta != buf->off)
             memmove(buf->base, buf->base + delta, buf->off - delta);
@@ -89,26 +89,26 @@ struct tcpls_options{
 };
 
 static void init_tcpls_options(struct tcpls_options *tcpls_options){
-   tcpls_options->timeoutval = -1;
-   tcpls_options->second = -1;
-   tcpls_options->peer_v4_addrs = NULL;
-   tcpls_options->peer_v6_addrs = NULL;
-   tcpls_options->ours_v4_addrs = NULL;
-   tcpls_options->ours_v6_addrs = NULL;
-   tcpls_options->nb_peer_v4_addrs = 0;
-   tcpls_options->nb_peer_v6_addrs = 0;
-   tcpls_options->nb_ours_v4_addrs = 0;
-   tcpls_options->nb_ours_v6_addrs = 0;
-   tcpls_options->timeout = 0;
-   tcpls_options->peer_v4 = 0;
-   tcpls_options->ours_v4 = 0;
-   tcpls_options->ours_v6 = 0;
-   tcpls_options->peer_v6 = 0;
-   return;
+	tcpls_options->timeoutval = -1;
+	tcpls_options->second = -1;
+	tcpls_options->peer_v4_addrs = NULL;
+	tcpls_options->peer_v6_addrs = NULL;
+	tcpls_options->ours_v4_addrs = NULL;
+	tcpls_options->ours_v6_addrs = NULL;
+	tcpls_options->nb_peer_v4_addrs = 0;
+	tcpls_options->nb_peer_v6_addrs = 0;
+	tcpls_options->nb_ours_v4_addrs = 0;
+	tcpls_options->nb_ours_v6_addrs = 0;
+	tcpls_options->timeout = 0;
+	tcpls_options->peer_v4 = 0;
+	tcpls_options->ours_v4 = 0;
+	tcpls_options->ours_v6 = 0;
+	tcpls_options->peer_v6 = 0;
+	return;
 };
 
 static int handle_addrs(struct tcpls_options *tcpls_options, 
-	unsigned int v4 , unsigned int ours,tcpls_t *tcpls, const char *port){
+			unsigned int v4 , unsigned int ours,tcpls_t *tcpls, const char *port){
 	int i, n;
 	list_t *l;
 	struct sockaddr_in sockaddr;
@@ -124,7 +124,6 @@ static int handle_addrs(struct tcpls_options *tcpls_options,
 			l = tcpls_options->ours_v6_addrs;
 			tcpls_options->ours_v6 = 0;
 			break;
-
 		case 2:
 			n = tcpls_options->nb_peer_v4_addrs;
 			l = tcpls_options->peer_v4_addrs;
@@ -138,13 +137,11 @@ static int handle_addrs(struct tcpls_options *tcpls_options,
 		default:
 			return -1;
 	}
-
-
 	for(i = 0; i < n; i++){
 		char *s = list_get(l, i);
 		int primary;
 		if(i == 0) primary = 1;
-		else primary = 0;
+      else primary = 0;
 		sockaddr.sin_port = htons(atoi(port));
 		if(v4){
 			sockaddr.sin_family = AF_INET;
@@ -252,20 +249,20 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
 {
     static const int inputfd_is_benchmark = -2;
     ptls_t *tls;
+	 uint32_t streamid;
+    int h = 0;
     if(!ctx->support_tcpls_options)
     	tls = ptls_new(ctx, server_name == NULL);
-    else tls = tcpls->tls;
-
-
-    
-
+    else{
+ 		tls = tcpls->tls;
+		tls->tcpls = tcpls;
+     }
     ptls_buffer_t rbuf, encbuf, ptbuf;
     enum { IN_HANDSHAKE, IN_1RTT, IN_SHUTDOWN } state = IN_HANDSHAKE;
     int inputfd = 0, ret = 0;
     size_t early_bytes_sent = 0;
     uint64_t data_received = 0;
     ssize_t ioret;
-    unsigned int settcpls_option = 0;
 
     uint64_t start_at = ctx->get_time->cb(ctx->get_time);
 
@@ -288,54 +285,93 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
         }
     }
 
-   // if(!ctx->support_tcpls_options || is_server){    
-	if (server_name != NULL) {
-	ptls_set_server_name(tls, server_name, 0);
-	if ((ret = ptls_handshake(tls, &encbuf, NULL, NULL, hsprop)) != PTLS_ERROR_IN_PROGRESS) {
-	    fprintf(stderr, "ptls_handshake:%d\n", ret);
-	    ret = 1;
-	    goto Exit;
+	if(ctx->support_tcpls_options){
+			if (server_name != NULL) 
+				ptls_set_server_name(tls, server_name, 0);
+			if((ret = tcpls_handshake(tls, sockfd, hsprop))){
+				ret = 1;
+				goto Exit;
+			}
+			if(!is_server){
+			struct sockaddr_in src, dst;
+			char *s = list_get(tcpls_options->ours_v4_addrs, 0);
+			char *d = list_get(tcpls_options->peer_v4_addrs, 0);
+			src.sin_port = htons(8443);
+			dst.sin_port = htons(8443);
+			src.sin_family = AF_INET;
+			dst.sin_family = AF_INET;
+			inet_pton(AF_INET, s, &src.sin_addr);
+			inet_pton(AF_INET, d, &dst.sin_addr);
+			printaddr(&src.sin_addr);
+			printaddr(&dst.sin_addr);
+			streamid = tcpls_stream_new(tls, (struct sockaddr*)&src, (struct sockaddr*)&dst);
+			tcpls_streams_attach(tls, streamid,1);
+			}
 	}
-	}
+	else{
+		if (server_name != NULL) {
+			ptls_set_server_name(tls, server_name, 0);
 
+			if ((ret = ptls_handshake(tls, &encbuf, NULL, NULL, hsprop))
+ 								!= PTLS_ERROR_IN_PROGRESS) {
+	    			fprintf(stderr, "ptls_handshake:%d\n", ret);
+	    			ret = 1;
+	    			goto Exit;
+			}
+		}
+	}
+   
+	if(ctx->support_tcpls_options){
+		while(1){
+			if(ptls_handshake_is_complete(tls)){
+				if(is_server)
+			printf("tot\n");
+			else
+			printf("tut\n");
+				if(!is_server){
+					
+						char * data = "Bonjour\n";
+						printf("Salut %s\n", data);
+						if((ret = tcpls_send(tls, streamid, data, sizeof(data)))){
+							fprintf(stderr, "tcpls_send failed:%d\n", ret);
+		   				goto Exit;
+						}
+				}
+				else{
+						char buf[256];
+						struct timeval tv;
+						tv.tv_sec = 2;
+						tv.tv_usec = 0;
+						tcpls_receive(tls, buf, sizeof(buf), &tv) ;
+						 write(1, buf, sizeof(buf));
+				}
+			}
+		}
+	}
 
 	while (1) {
 	/* check if data is available */
 	fd_set readfds, writefds, exceptfds;
 	int maxfd = 0;
 	struct timeval timeout;
-
-	/* checks if handshake is complete to send tcpls_options*/
-	if(ptls_handshake_is_complete(tls) && !settcpls_option){
-		if(ctx->support_tcpls_options){
-	    		assert(ctx->tcpls_options_confirmed);
-			if(tcpls_options->timeout){
-				assert(ptls_set_user_timeout(tls, 
-					tcpls_options->timeoutval, tcpls_options->second, 0, 1) == 0);
-				assert(ptls_send_tcpoption(tls, &encbuf, USER_TIMEOUT)==0);
-				tcpls_options->timeout = 0;
-			}
-		}
-		settcpls_option = 1;
-	}
-
+	
 	do {
-	    FD_ZERO(&readfds);
-	    FD_ZERO(&writefds);
-	    FD_ZERO(&exceptfds);
-	    FD_SET(sockfd, &readfds);
-	    if (encbuf.off != 0 || inputfd == inputfd_is_benchmark)
+		FD_ZERO(&readfds);
+		FD_ZERO(&writefds);
+		FD_ZERO(&exceptfds);
+		FD_SET(sockfd, &readfds);
+		if (encbuf.off != 0 || inputfd == inputfd_is_benchmark)
 		FD_SET(sockfd, &writefds);
-	    FD_SET(sockfd, &exceptfds);
-	    maxfd = sockfd + 1;
-	    if (inputfd >= 0) {
-		FD_SET(inputfd, &readfds);
-		FD_SET(inputfd, &exceptfds);
-		if (maxfd <= inputfd)
-		    maxfd = inputfd + 1;
-	    }
-	    timeout.tv_sec = encbuf.off != 0 ? 0 : 3600;
-	    timeout.tv_usec = 0;
+		FD_SET(sockfd, &exceptfds);
+		maxfd = sockfd + 1;
+		if (inputfd >= 0) {
+			FD_SET(inputfd, &readfds);
+			FD_SET(inputfd, &exceptfds);
+			if (maxfd <= inputfd)
+				maxfd = inputfd + 1;
+		}
+		timeout.tv_sec = encbuf.off != 0 ? 0 : 3600;
+		timeout.tv_usec = 0;
 	} while (select(maxfd, &readfds, &writefds, &exceptfds, &timeout) == -1);
 
 
@@ -351,6 +387,7 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
 	    } else if (ioret <= 0) {
 		goto Exit;
 	    }
+	    
 	    while ((leftlen = ioret - off) != 0) {
 		if (state == IN_HANDSHAKE) {
 		    if ((ret = ptls_handshake(tls, &encbuf, bytebuf + off, &leftlen, hsprop)) == 0) {
@@ -364,10 +401,12 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
 		    } else if (ret == PTLS_ERROR_IN_PROGRESS) {
 		        /* ok */
 		    } else {
-		        if (encbuf.off != 0)
-		            (void)write(sockfd, encbuf.base, encbuf.off);
-		        fprintf(stderr, "ptls_handshake:%d\n", ret);
-		        goto Exit;
+				  if(!ctx->support_tcpls_options){
+		        		if (encbuf.off != 0)
+		            		(void)write(sockfd, encbuf.base, encbuf.off);
+		        		fprintf(stderr, "ptls_handshake:%d\n", ret);
+		        		goto Exit;
+					}
 		    }
 		} else {
 		    if ((ret = ptls_receive(tls, &rbuf, bytebuf + off, &leftlen)) == 0) {
@@ -377,8 +416,9 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
 		                write(1, rbuf.base, rbuf.off);
 		            rbuf.off = 0;
 		        }
-		    } else if (ret == PTLS_ERROR_IN_PROGRESS) {
+		    } else if (ret == PTLS_ERROR_IN_PROGRESS ) {
 		        /* ok */
+				
 		    } else {
 		        fprintf(stderr, "ptls_receive:%d\n", ret);
 		        goto Exit;
@@ -403,7 +443,7 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
 		    /* closed */
 		    if (input_file != NULL)
 		        close(inputfd);
-		    inputfd = -1;
+		    inputfd = -2;
 		}
 	    } else if (inputfd == inputfd_is_benchmark) {
 		if (ptbuf.capacity < block_size) {
@@ -424,23 +464,42 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
 		    send_amount = max_can_be_sent - early_bytes_sent;
 		}
 		if (send_amount != 0) {
-		    if ((ret = ptls_send(tls, &encbuf, ptbuf.base, send_amount)) != 0) {
-		        fprintf(stderr, "ptls_send(early_data):%d\n", ret);
-		        goto Exit;
-		    }
+			if(ctx->support_tcpls_options){
+				char * data = "Bonjour\n";
+				if((ret = tcpls_send(tls, streamid, data, sizeof(data)))){
+							fprintf(stderr, "tcpls_send failed:%d\n", ret);
+		    				goto Exit;
+						}
+			}
+			else{
+				
+		    	if ((ret = ptls_send(tls, &encbuf, ptbuf.base, send_amount)) != 0) {
+		        	fprintf(stderr, "ptls_send(early_data):%d\n", ret);
+		        	goto Exit;
+		    	}
+			}
 		    early_bytes_sent += send_amount;
-		}
+			}
 	    } else {
-		if ((ret = ptls_send(tls, &encbuf, ptbuf.base, ptbuf.off)) != 0) {
-		    fprintf(stderr, "ptls_send(1rtt):%d\n", ret);
-		    goto Exit;
-		}
-		ptbuf.off = 0;
+					if(ctx->support_tcpls_options){
+						char * data = "Bonjour\n";
+						if((ret = tcpls_send(tls, streamid, data, sizeof(data)))){
+							fprintf(stderr, "tcpls_send failed:%d\n", ret);
+		    				goto Exit;
+						}
+					}else{
+						if ((ret = ptls_send(tls, &encbuf, ptbuf.base, ptbuf.off)) != 0) {
+		    				fprintf(stderr, "ptls_send(1rtt):%d\n", ret);
+		    				goto Exit;
+						}
+					}
+			ptbuf.off = 0;
 	    }
 	}
 
 	/* send any data */
 	if (encbuf.off != 0) {
+		if(!ctx->support_tcpls_options){
 	    while ((ioret = write(sockfd, encbuf.base, encbuf.off)) == -1 && errno == EINTR)
 		;
 	    if (ioret == -1 && (errno == EWOULDBLOCK || errno == EAGAIN)) {
@@ -450,6 +509,7 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
 	    } else {
 		shift_buffer(&encbuf, ioret);
 	    }
+		}
 	}
 
 	/* close the sender side when necessary */
@@ -469,18 +529,7 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
 	    state = IN_SHUTDOWN;
 	}
 	}
-
-/*}
-
-else{
-	int err = tcpls_handshake(tls);
-	if(ptls_handshake_is_complete(tls))
-		printf("handshake is complete %d\n", err);
-	else
-		printf("handshake in progress %d\n", err);
-
-}*/
-
+       
 Exit:
     if (input_file == input_file_is_benchmark) {
         double elapsed = (ctx->get_time->cb(ctx->get_time) - start_at) / 1000.0;
@@ -881,10 +930,10 @@ int main(int argc, char **argv)
         exit(1);
    
     if(ctx.support_tcpls_options){
-	tcpls = tcpls_new(&ctx, is_server);
+		tcpls = tcpls_new(&ctx, is_server);
 
-	if((err=handle_tcpls_options(&tcpls_options,tcpls, port)))
-		exit(1);
+		if((err=handle_tcpls_options(&tcpls_options,tcpls, port)))
+			exit(1);
     }
 
    
