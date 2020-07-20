@@ -111,6 +111,7 @@ void *tcpls_new(void *ctx, int is_server) {
       ptls_ctx->random_bytes(rand_cookies, COOKIE_LEN);
       list_add(tcpls->cookies, rand_cookies);
     }
+    
   }
   else {
     tls = ptls_client_new(ptls_ctx);
@@ -634,6 +635,7 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
   if (getsockname(socket, (struct sockaddr *) &ss, &sslen) < 0) {
     perror("getsockname(2) failed");
   }
+  
   /** retrieve the correct addr */
   if (ss.ss_family == AF_INET) {
     tcpls_v4_addr_t *v4 = tcpls->ours_v4_addr_llist;
@@ -929,9 +931,8 @@ ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t n
     connect_info_t *con = get_primary_con_info(tcpls);
     assert(con);
     stream = stream_new(tls, tcpls->next_stream_id++, con, 1);
-
+    
     stream->need_sending_attach_event = 0;
-
     uint8_t input[8];
     /** send the stream id to the peer */
     uint32_t peer_transportid = 0;
@@ -948,6 +949,7 @@ ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t n
     stream = stream_get(tcpls, streamid);
     /** check whether we have to initiate this stream; it might have been
      * created before the handshake */
+    assert(stream);
     if (!stream->aead_initialized) {
       if (new_stream_derive_aead_context(tls, stream, 1)) {
         return -1;
@@ -975,6 +977,9 @@ ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t n
     default: return ret;
   }
   /** Send over the socket's stream */
+  do{
+  tcpls->send_start += ret;
+  
   ret = send(stream->con->socket, tcpls->sendbuf->base+tcpls->send_start,
       tcpls->sendbuf->off-tcpls->send_start, 0);
   if (ret < 0) {
@@ -1025,6 +1030,9 @@ ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t n
       /** Normal close (FIN) then RST */
     }
   }
+  
+  }while(tcpls->sendbuf->off > tcpls->send_start + ret);
+  
   if (tcpls->check_stream_attach_sent) {
     check_stream_attach_have_been_sent(tcpls, ret);
   }
@@ -1076,6 +1084,7 @@ ssize_t tcpls_receive(ptls_t *tls, void *buf, size_t nbytes, struct timeval *tv)
         maxfd = con->socket;
     }
   }
+  
   ret = select(maxfd+1, &rset, NULL, NULL, tv);
   if (ret == -1) {
     list_free(socklist);
@@ -1140,18 +1149,20 @@ ssize_t tcpls_receive(ptls_t *tls, void *buf, size_t nbytes, struct timeval *tv)
             /** We may have received a stream attach that changed the aead*/
             tcpls->tls->traffic_protection.dec.aead = remember_aead;
           }
+          
         }
         else {
 
           for (int i = 0; i < streams_ptr->size && rret; i++) {
-            tcpls_stream_t **stream = list_get(streams_ptr, i);
+            tcpls_stream_t *stream = list_get(streams_ptr, i);
 
             ptls_aead_context_t *remember_aead = tcpls->tls->traffic_protection.dec.aead;
             // get the right  aead context matching the stream id
             // This is done for compabitility with original PTLS's unit tests
             /** We possible have not stream attached server-side */
             if (stream)
-              tcpls->tls->traffic_protection.dec.aead = (*stream)->aead_dec;
+              tcpls->tls->traffic_protection.dec.aead = stream->aead_dec;
+            
             input_off = 0;
             input_size = ret;
             do {
@@ -1166,7 +1177,6 @@ ssize_t tcpls_receive(ptls_t *tls, void *buf, size_t nbytes, struct timeval *tv)
         if (rret != 0) {
           ptls_buffer_dispose(&decryptbuf);
           list_free(socklist);
-          fprintf(stderr, "tcpls_receive got a %d error message code\n", rret);
           return ret;
         }
         memcpy(buf+received_data, decryptbuf.base, decryptbuf.off);
@@ -1921,7 +1931,7 @@ tcpls_stream_t *stream_get(tcpls_t *tcpls, streamid_t streamid) {
 static list_t *get_streams_from_socket(tcpls_t *tcpls, int socket) {
   if (!tcpls->streams)
     return NULL;
-  list_t *streams_ptr = new_list(sizeof(tcpls_stream_t *), 3);
+  list_t *streams_ptr = new_list(sizeof(tcpls_stream_t ), 3);
   tcpls_stream_t *stream;
   for (int i = 0; i < tcpls->streams->size; i++) {
     stream = list_get(tcpls->streams, i);
