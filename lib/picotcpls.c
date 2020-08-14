@@ -546,7 +546,7 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
       /* we should get the TRANSPORTID_NEW -- NOTE; this is the size should not
        * exceed it */
       uint8_t recvbuf[128];
-      while ((rret = read(socket, recvbuf, sizeof(recvbuf))) == -1 && errno == EINTR)
+      while ((rret = read(socket, recvbuf, sizeof(recvbuf))) == -1 && (errno == EINTR || errno == EAGAIN))
         ;
       if (rret == 0)
         goto Exit;
@@ -573,7 +573,7 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
   ssize_t roff;
   uint8_t recvbuf[8192];
   do {
-    while ((rret = read(socket, recvbuf, sizeof(recvbuf))) == -1 && errno == EINTR)
+    while ((rret = read(socket, recvbuf, sizeof(recvbuf))) == -1 && (errno == EINTR || errno == EAGAIN))
       ;
     if (rret == 0)
       goto Exit;
