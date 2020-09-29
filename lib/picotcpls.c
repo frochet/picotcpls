@@ -89,7 +89,7 @@ static void check_stream_attach_have_been_sent(tcpls_t *tcpls, int consumed);
 static int new_stream_derive_aead_context(ptls_t *tls, tcpls_stream_t *stream, int is_ours);
 static int handle_connect(tcpls_t *tcpls, tcpls_v4_addr_t *src, tcpls_v4_addr_t
     *dest, tcpls_v6_addr_t *src6, tcpls_v6_addr_t *dest6, unsigned short sa_family,
-    int *nfds, connect_info_t *coninfo);
+    int *nfds, connect_info_t *coninfo, int socket);
 static int multipath_merge_buffers(tcpls_t *tcpls, ptls_buffer_t *decryptbuf, int nbytes);
 static int cmp_mpseq(void *mpseq1, void *mpseq2);
 static int check_con_has_connected(tcpls_t *tcpls, connect_info_t *con, int *res);
@@ -301,8 +301,9 @@ int tcpls_add_domain(ptls_t *tls, char* domain) {
  *         1 if the timeout fired but some address(es) connected
  *         0 if all addresses connected
  */
+
 int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
-    struct timeval *timeout) {
+    struct timeval *timeout, int socket) {
   tcpls_t *tcpls = tls->tcpls;
   int maxfds = 0;
   int nfds = 0;
@@ -320,12 +321,12 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
       tcpls_v6_addr_t *ours_current_v6 = tcpls->ours_v6_addr_llist;
       do {
         if (current_v4) {
-          if (handle_connect(tcpls, ours_current_v4, current_v4, NULL, NULL, AF_INET, &nfds, &coninfo) < 0) {
+          if (handle_connect(tcpls, ours_current_v4, current_v4, NULL, NULL, AF_INET, &nfds, &coninfo, socket) < 0) {
             return -1;
           }
         }
         if (current_v6) {
-          if(handle_connect(tcpls, NULL, NULL, ours_current_v6, current_v6, AF_INET6, &nfds, &coninfo) < 0) {
+          if(handle_connect(tcpls, NULL, NULL, ours_current_v6, current_v6, AF_INET6, &nfds, &coninfo, socket) < 0) {
             return -1;
           }
         }
@@ -350,7 +351,7 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
       if (!ours_v4)
         return -1;
       while (current_v4) {
-        if (handle_connect(tcpls, ours_v4, current_v4, NULL, NULL, AF_INET, &nfds, &coninfo) < 0) {
+        if (handle_connect(tcpls, ours_v4, current_v4, NULL, NULL, AF_INET, &nfds, &coninfo, socket) < 0) {
           return -1;
         }
         current_v4 = current_v4->next;
@@ -362,7 +363,7 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
       if (!ours_v6)
         return -1;
       while (current_v6) {
-        if (handle_connect(tcpls, NULL, NULL, ours_v6, current_v6, AF_INET6, &nfds, &coninfo) < 0) {
+        if (handle_connect(tcpls, NULL, NULL, ours_v6, current_v6, AF_INET6, &nfds, &coninfo, socket) < 0) {
           return -1;
         }
         current_v6 = current_v6->next;
@@ -376,7 +377,7 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
       tcpls_v4_addr_t *dest_addr = get_addr_from_sockaddr(tcpls->v4_addr_llist, (struct sockaddr_in *) dest);
       if (!our_addr || !dest_addr)
         return -1;
-      if (handle_connect(tcpls, our_addr, dest_addr, NULL, NULL, AF_INET, &nfds, &coninfo) < 0) {
+      if (handle_connect(tcpls, our_addr, dest_addr, NULL, NULL, AF_INET, &nfds, &coninfo, socket) < 0) {
         return -1;
       }
     }
@@ -385,7 +386,7 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
       tcpls_v6_addr_t *dest_addr = get_addr6_from_sockaddr(tcpls->v6_addr_llist, (struct sockaddr_in6 *) dest);
       if (!our_addr || !dest_addr)
         return -1;
-      if (handle_connect(tcpls, NULL, NULL, our_addr, dest_addr, AF_INET6, &nfds, &coninfo) < 0) {
+      if (handle_connect(tcpls, NULL, NULL, our_addr, dest_addr, AF_INET6, &nfds, &coninfo, socket) < 0) {
         return -1;
       }
     }
@@ -396,7 +397,7 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
       tcpls_v4_addr_t *dest_addr = get_addr_from_sockaddr(tcpls->v4_addr_llist, (struct sockaddr_in *)dest);
       if (!dest_addr)
         return -1;
-      if (handle_connect(tcpls, NULL, dest_addr, NULL, NULL, AF_INET, &nfds, &coninfo) < 0) {
+      if (handle_connect(tcpls, NULL, dest_addr, NULL, NULL, AF_INET, &nfds, &coninfo, socket) < 0) {
         return -1;
       }
     }
@@ -404,7 +405,7 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
       tcpls_v6_addr_t *dest_addr = get_addr6_from_sockaddr(tcpls->v6_addr_llist, (struct sockaddr_in6 *) dest);
       if (!dest_addr)
         return -1;
-      if (handle_connect(tcpls, NULL, NULL, NULL, dest_addr, AF_INET6, &nfds, &coninfo) < 0) {
+      if (handle_connect(tcpls, NULL, NULL, NULL, dest_addr, AF_INET6, &nfds, &coninfo, socket) < 0) {
         return -1;
       }
     }
@@ -732,6 +733,7 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
   connect_info_t *conn = get_con_info_from_socket(tcpls, socket);
   if (conn)
     return 0;
+    
   if (cookie) {
     uint8_t* cookie_in = list_get(tcpls->cookies, tcpls->cookies->size-1);
     if (!memcmp(cookie, cookie_in, COOKIE_LEN)) {
@@ -1518,11 +1520,11 @@ static tcpls_v6_addr_t *get_addr6_from_sockaddr(tcpls_v6_addr_t *llist, struct s
 
 static int handle_connect(tcpls_t *tcpls, tcpls_v4_addr_t *src, tcpls_v4_addr_t
     *dest, tcpls_v6_addr_t *src6, tcpls_v6_addr_t *dest6, unsigned short afinet,
-    int *nfds, connect_info_t *coninfo) {
+    int *nfds, connect_info_t *coninfo, int sd) {
   int ret = get_con_info_from_addrs(tcpls, src, dest, src6, dest6, &coninfo);
   if (ret) {
 
-    coninfo->socket = 0;
+    coninfo->socket = sd;
     coninfo->state = CLOSED;
     coninfo->this_transportid = tcpls->next_transport_id++;
     coninfo->buffrag = malloc(sizeof(ptls_buffer_t));

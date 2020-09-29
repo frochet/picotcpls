@@ -238,7 +238,7 @@ struct st_ptls_record_t;
 void *tcpls_new();
 
 int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
-    struct timeval *timeout);
+    struct timeval *timeout, int socket);
 
 int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties);
 
