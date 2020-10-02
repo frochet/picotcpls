@@ -414,7 +414,7 @@ static int handle_client_multipath_test(tcpls_t *tcpls, struct cli_data *data) {
       /*struct timeval timeout;*/
       /*timeout.tv_sec = 5;*/
       /*timeout.tv_usec = 0;*/
-      /*tcpls_connect(tcpls->tls, NULL, (struct sockaddr*) &tcpls->v4_addr_llist->addr, &timeout);*/
+      /*tcpls_connect(tcpls->tls, NULL, (struct sockaddr*) &tcpls->v4_addr_llist->addr, &timeout, -1);*/
       /*int socket = 0;*/
       connect_info_t *con = NULL;
       for (int i = 0; i < tcpls->connect_infos->size; i++) {
@@ -471,7 +471,7 @@ static int handle_client_simple_handshake(tcpls_t *tcpls, struct cli_data *data)
   timeout.tv_usec = 0;
   struct timeval t_init, t_now;
   gettimeofday(&t_init, NULL);
-  int err = tcpls_connect(tcpls->tls, NULL, NULL, &timeout);
+  int err = tcpls_connect(tcpls->tls, NULL, NULL, &timeout, -1);
   if (err){
     fprintf(stderr, "tcpls_connect failed with err %d\n", err);
     return 1;
@@ -525,7 +525,7 @@ static int handle_client_connection(tcpls_t *tcpls, struct cli_data *data,
         struct timeval timeout;
         timeout.tv_sec = 5;
         timeout.tv_usec = 0;
-        int err = tcpls_connect(tcpls->tls, NULL, NULL, &timeout);
+        int err = tcpls_connect(tcpls->tls, NULL, NULL, &timeout, -1);
         if (err){
           fprintf(stderr, "tcpls_connect failed with err %d\n", err);
           return 1;
@@ -948,7 +948,7 @@ static int run_client(struct sockaddr_storage *sa_our, struct sockaddr_storage
   }
   else {
     struct timeval timeout = {.tv_sec = 100, .tv_usec = 0};
-    int err = tcpls_connect(tcpls->tls, NULL, NULL, &timeout);
+    int err = tcpls_connect(tcpls->tls, NULL, NULL, &timeout, -1);
     if (err){
       fprintf(stderr, "tcpls_connect failed with err %d\n", err);
       return 1;
