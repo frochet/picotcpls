@@ -12,13 +12,16 @@ IF (WITH_DTRACE)
     MESSAGE(STATUS "Enabling USDT support")
 ENDIF ()
 
-SET(CMAKE_C_FLAGS "-std=c99 -g3 -Wall ${CC_WARNING_FLAGS} ${CMAKE_C_FLAGS}")
+SET(CMAKE_C_FLAGS "-std=c99 -g3 -Wall -fPIC ${CC_WARNING_FLAGS} ${CMAKE_C_FLAGS}")
 SET(PYTHON_EXECUTABLE, "python3")
+link_directories(${capstone_LIBRARY_DIRS})
 INCLUDE_DIRECTORIES(
     deps/cifra/src/ext
     deps/cifra/src
     deps/micro-ecc
     deps/picotest
+    deps/syscall_intercept/include
+    deps/log.c/src
     include
     ${CMAKE_CURRENT_BINARY_DIR})
 SET(MINICRYPTO_LIBRARY_FILES
@@ -35,15 +38,19 @@ SET(MINICRYPTO_LIBRARY_FILES
     deps/cifra/src/modes.c
     deps/cifra/src/poly1305.c
     deps/cifra/src/sha256.c
-    deps/cifra/src/sha512.c)
+    deps/cifra/src/sha512.c
+    deps/log.c/src/log.c)
 SET(CORE_FILES
     lib/picotls.c
     lib/picotcpls.c
     lib/containers.c
     lib/heap.c
-    lib/pembase64.c)
+    lib/pembase64.c
+    deps/log.c/src/log.c)
+    
 SET(CORE_TEST_FILES
-    t/picotls.c)
+    t/picotls.c
+    deps/log.c/src/log.c)
 IF (WITH_DTRACE)
     SET(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DPICOTLS_USE_DTRACE=1")
     DEFINE_DTRACE_DEPENDENCIES(${PROJECT_SOURCE_DIR}/picotls-probes.d picotls)
@@ -67,7 +74,7 @@ IF (BROTLI_DEC_FOUND AND BROTLI_ENC_FOUND)
 ENDIF ()
 
 ADD_LIBRARY(picotls-core ${CORE_FILES})
-TARGET_LINK_LIBRARIES(picotls-core ${CORE_EXTRA_LIBS})
+TARGET_LINK_LIBRARIES(picotls-core ${CORE_EXTRA_LIBS}  syscall_intercept_static  )
 ADD_LIBRARY(picotls-minicrypto
     ${MINICRYPTO_LIBRARY_FILES}
     lib/cifra.c
@@ -80,7 +87,7 @@ ADD_LIBRARY(picotls-minicrypto
     lib/uecc.c
     lib/asn1.c
     lib/ffx.c)
-TARGET_LINK_LIBRARIES(picotls-minicrypto picotls-core)
+TARGET_LINK_LIBRARIES( picotls-minicrypto   picotls-core syscall_intercept_static  )
 ADD_EXECUTABLE(test-minicrypto.t
     ${MINICRYPTO_LIBRARY_FILES}
     deps/picotest/picotest.c
@@ -94,7 +101,7 @@ ADD_EXECUTABLE(test-minicrypto.t
     lib/cifra/aes128.c
     lib/cifra/aes256.c
     lib/cifra/random.c)
-
+TARGET_LINK_LIBRARIES(test-minicrypto.t syscall_intercept_static) 
 SET(TEST_EXES test-minicrypto.t)
 
 FIND_PACKAGE(OpenSSL)
@@ -102,11 +109,11 @@ IF (OPENSSL_FOUND AND NOT (OPENSSL_VERSION VERSION_LESS "1.0.1"))
     MESSAGE(STATUS "  Enabling OpenSSL support")
     INCLUDE_DIRECTORIES(${OPENSSL_INCLUDE_DIR})
     ADD_LIBRARY(picotls-openssl lib/openssl.c)
-    TARGET_LINK_LIBRARIES(picotls-openssl ${OPENSSL_LIBRARIES} picotls-core ${CMAKE_DL_LIBS})
+    TARGET_LINK_LIBRARIES( picotls-openssl ${OPENSSL_LIBRARIES}  picotls-core ${CMAKE_DL_LIBS} syscall_intercept_static)
     ADD_EXECUTABLE(cli t/cli.c lib/pembase64.c)
-    TARGET_LINK_LIBRARIES(cli picotls-openssl picotls-core)
+    TARGET_LINK_LIBRARIES(cli  picotls-openssl picotls-core  syscall_intercept_static)
     ADD_EXECUTABLE(picotls-esni src/esni.c)
-    TARGET_LINK_LIBRARIES(picotls-esni picotls-openssl picotls-core ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS})
+    TARGET_LINK_LIBRARIES(picotls-esni picotls-openssl picotls-core ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS}  syscall_intercept_static)
 
     ADD_EXECUTABLE(test-openssl.t
         ${MINICRYPTO_LIBRARY_FILES}
@@ -124,11 +131,11 @@ IF (OPENSSL_FOUND AND NOT (OPENSSL_VERSION VERSION_LESS "1.0.1"))
         ${CORE_TEST_FILES}
         t/openssl.c)
     SET_TARGET_PROPERTIES(test-openssl.t PROPERTIES COMPILE_FLAGS "-DPTLS_MEMORY_DEBUG=1")
-    TARGET_LINK_LIBRARIES(test-openssl.t ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS})
+    TARGET_LINK_LIBRARIES(test-openssl.t  syscall_intercept_static ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS} )
 
     ADD_EXECUTABLE(ptlsbench t/ptlsbench.c)
     SET_TARGET_PROPERTIES(ptlsbench PROPERTIES COMPILE_FLAGS "-DPTLS_MEMORY_DEBUG=1")
-    TARGET_LINK_LIBRARIES(ptlsbench picotls-minicrypto picotls-openssl picotls-core ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS})
+    TARGET_LINK_LIBRARIES(ptlsbench  picotls-minicrypto picotls-openssl picotls-core ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS}  syscall_intercept_static)
 
     SET(TEST_EXES ${TEST_EXES} test-openssl.t)
 ELSE ()
