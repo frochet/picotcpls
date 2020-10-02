@@ -1,3 +1,9 @@
 [submodule "deps/picotest"]
 	path = deps/picotest
 	url = https://github.com/h2o/picotest.git
+[submodule "syscall_intercept"]
+	path = syscall_intercept
+	url = https://github.com/pmem/syscall_intercept.git
+[submodule "deps/syscall_intercept"]
+	path = deps/syscall_intercept
+	url = https://github.com/pmem/syscall_intercept.git

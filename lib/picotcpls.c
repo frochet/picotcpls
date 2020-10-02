@@ -45,6 +45,10 @@
  * ptls_send_tcpotion(...)
  *
  */
+ 
+#include <libsyscall_intercept_hook_point.h>
+#include <syscall.h>
+#include <log.h>
 
 #include <linux/bpf.h>
 #include <stdio.h>
@@ -601,14 +605,15 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
         gettimeofday(&t_initial, NULL);
         memcpy(&t_previous, &t_initial, sizeof(t_previous));
         if (con->dest) {
-          if ((ret = sendto(sock, sendbuf.base+rret, sendbuf.off-rret, MSG_FASTOPEN,
+          
+          if ((ret = syscall_no_intercept(SYS_sendto, sock, sendbuf.base+rret, sendbuf.off-rret, MSG_FASTOPEN,
                   (struct sockaddr*) &con->dest->addr,  sizeof(con->dest->addr))) < 0) {
             perror("sendto failed");
             goto Exit;
           }
         }
         else if (con->dest6) {
-          if ((ret = sendto(sock, sendbuf.base+rret, sendbuf.off-rret, MSG_FASTOPEN,
+          if ((ret = syscall_no_intercept(SYS_sendto , sock, sendbuf.base+rret, sendbuf.off-rret, MSG_FASTOPEN,
                   (struct sockaddr*) &con->dest6->addr,  sizeof(con->dest6->addr))) < 0) {
             perror("sendto failed");
             goto Exit;
@@ -616,7 +621,7 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
         }
       }
       else {
-        if ((ret = send(sock, sendbuf.base+rret, sendbuf.off-rret, 0)) < 0) {
+        if ((ret = syscall_no_intercept(SYS_sendto,sock, sendbuf.base+rret, sendbuf.off-rret, 0, NULL, 0)) < 0) {
           perror("send(2) failed");
           goto Exit;
         }
@@ -630,7 +635,7 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
       /* we should get the TRANSPORTID_NEW -- NOTE; this is the size should not
        * exceed it */
       uint8_t recvbuf[256];
-      while ((rret = read(sock, recvbuf, sizeof(recvbuf))) == -1 && errno == EINTR)
+      while ((rret = syscall_no_intercept(SYS_read, sock, recvbuf, sizeof(recvbuf))) == -1 && errno == EINTR)
         ;
       if (rret == 0)
         goto Exit;
@@ -673,7 +678,7 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
   ssize_t roff;
   uint8_t recvbuf[8192];
   do {
-    while ((rret = read(sock, recvbuf, sizeof(recvbuf))) == -1 && errno == EINTR)
+    while ((rret = syscall_no_intercept(SYS_read, sock, recvbuf, sizeof(recvbuf))) == -1 && errno == EINTR)
       ;
     if (rret == 0)
       goto Exit;
@@ -695,7 +700,7 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
       ret = ptls_handshake(tls, &sendbuf, recvbuf + roff, &consumed, properties);
       roff += consumed;
       if ((ret == 0 || ret == PTLS_ERROR_IN_PROGRESS) && sendbuf.off != 0) {
-        if ((rret = send(sock, sendbuf.base, sendbuf.off, 0)) < 0) {
+        if ((rret = syscall_no_intercept(SYS_sendto, sock, sendbuf.base, sendbuf.off, 0, NULL, 0)) < 0) {
           perror("send(2) failed");
           goto Exit;
         }
@@ -733,7 +738,6 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
   connect_info_t *conn = get_con_info_from_socket(tcpls, socket);
   if (conn)
     return 0;
-    
   if (cookie) {
     uint8_t* cookie_in = list_get(tcpls->cookies, tcpls->cookies->size-1);
     if (!memcmp(cookie, cookie_in, COOKIE_LEN)) {
@@ -758,7 +762,7 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
   newconn.this_transportid = tcpls->next_transport_id++;
   newconn.peer_transportid = transportid;
   tcpls->nbr_tcp_streams++;
-  if (getsockname(socket, (struct sockaddr *) &ss, &sslen) < 0) {
+  if (syscall_no_intercept(SYS_getsockname, socket, (struct sockaddr *) &ss, &sslen) < 0) {
     perror("getsockname(2) failed");
   }
   /** retrieve the correct addr */
@@ -1122,8 +1126,8 @@ ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t n
     default: return ret;
   }
   /** Send over the socket's stream */
-  ret = send(stream->con->socket, stream->con->sendbuf->base+stream->con->send_start,
-      stream->con->sendbuf->off-stream->con->send_start, 0);
+  ret = syscall_no_intercept(SYS_sendto, stream->con->socket, stream->con->sendbuf->base+stream->con->send_start,
+      stream->con->sendbuf->off-stream->con->send_start, 0, NULL, 0);
   if (ret < 0) {
     /** The peer reset the connection */
     stream->con->state = CLOSED;
@@ -1158,6 +1162,7 @@ ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t n
     stream->con->sendbuf->off = 0;
     stream->con->send_start = 0;
     tcpls->check_stream_attach_sent = 0;
+    return nbytes;
   }
   else if (ret+stream->con->send_start < stream->con->sendbuf->off) {
     stream->con->send_start += ret;
@@ -1213,14 +1218,15 @@ int tcpls_receive(ptls_t *tls, ptls_buffer_t *decryptbuf, size_t nbytes, struct 
     con = list_get(tcpls->connect_infos, i);
     if (FD_ISSET(con->socket, &rset)) {
       if (initialnbytes == nbytes)
-        ret = recv(con->socket, input, recvlen+remainder, 0);
+        ret = syscall_no_intercept(SYS_recvfrom, con->socket, input, recvlen+remainder, 0, NULL, NULL);
       else
-        ret = recv(con->socket, input, recvlen, 0);
+        ret = syscall_no_intercept(SYS_recvfrom,con->socket, input, recvlen, 0, NULL, NULL);
       if (ret <= 0) {
         if (errno == ECONNRESET) {
           /** TODO next packets may need discarded? Or send an ack and wait! */
           /*ret = tcpls_receive(tls, buf, nbytes, tv);*/
         }
+        log_debug("connexion closed by tcpls_receive %d:%d:%d", con->socket, errno, ret);
         connection_close(tcpls, con);
         return ret;
       }
