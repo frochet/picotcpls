@@ -1206,9 +1206,9 @@ int tcpls_receive(ptls_t *tls, ptls_buffer_t *decryptbuf, size_t nbytes, struct 
     }
   }
   selectret = select(maxfd+1, &rset, NULL, NULL, tv);
-  if (selectret <= 0) {
-    return -1;
-  }
+  if (selectret <= 0) 
+    return NO_DATA;
+  
   ret = 0;
   uint8_t input[nbytes];
   int recvlen, remainder;
@@ -1226,6 +1226,9 @@ int tcpls_receive(ptls_t *tls, ptls_buffer_t *decryptbuf, size_t nbytes, struct 
           /** TODO next packets may need discarded? Or send an ack and wait! */
           /*ret = tcpls_receive(tls, buf, nbytes, tv);*/
         }
+        if(errno == ENOENT)
+          return SOCKET_CLOSED;
+        
         log_debug("connexion closed by tcpls_receive %d:%d:%d", con->socket, errno, ret);
         connection_close(tcpls, con);
         return ret;
@@ -1256,6 +1259,7 @@ int tcpls_receive(ptls_t *tls, ptls_buffer_t *decryptbuf, size_t nbytes, struct 
           }
         }
         else {
+          
           ptls_buffer_t *buf_to_use = NULL;
           for (int i = 0; i < tcpls->streams->size && rret; i++) {
             tcpls_stream_t *stream = list_get(tcpls->streams, i);
