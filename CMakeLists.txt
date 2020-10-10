@@ -20,7 +20,7 @@ INCLUDE_DIRECTORIES(
     deps/cifra/src
     deps/micro-ecc
     deps/picotest
-    deps/syscall_intercept/include
+    syscall_intercept/include
     deps/log.c/src
     include
     ${CMAKE_CURRENT_BINARY_DIR})
