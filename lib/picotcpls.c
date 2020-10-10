@@ -1207,7 +1207,7 @@ int tcpls_receive(ptls_t *tls, ptls_buffer_t *decryptbuf, size_t nbytes, struct 
   }
   selectret = select(maxfd+1, &rset, NULL, NULL, tv);
   if (selectret <= 0) 
-    return NO_DATA;
+    return TCPLS_NO_DATA_RECEIVED;
   
   ret = 0;
   uint8_t input[nbytes];
@@ -1227,7 +1227,7 @@ int tcpls_receive(ptls_t *tls, ptls_buffer_t *decryptbuf, size_t nbytes, struct 
           /*ret = tcpls_receive(tls, buf, nbytes, tv);*/
         }
         if(errno == ENOENT)
-          return SOCKET_CLOSED;
+          return TCPLS_SOCKET_IS_CLOSED;
         
         log_debug("connexion closed by tcpls_receive %d:%d:%d", con->socket, errno, ret);
         connection_close(tcpls, con);

@@ -7,3 +7,6 @@
 [submodule "deps/syscall_intercept"]
 	path = deps/syscall_intercept
 	url = https://github.com/pmem/syscall_intercept.git
+[submodule "deps/log.c"]
+	path = deps/log.c
+	url = https://github.com/rxi/log.c.git
