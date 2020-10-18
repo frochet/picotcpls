@@ -29,8 +29,10 @@
 #define COOKIE_LEN 16
 #define CONNID_LEN 16
 
-#define TCPLS_NO_DATA_RECEIVED -1000
-#define TCPLS_SOCKET_IS_CLOSED -2000
+#define TCPLS_NO_DATA_RECEIVED     -1000
+#define TCPLS_SOCKET_IS_CLOSED     -2000
+#define TCPLS_ADDR_EXIST           -3000
+#define TCPLS_CONNECT_IN_PROGRESS  -4000
 
 /** TCP options we would support in the TLS context */
 typedef enum tcpls_enum_t {

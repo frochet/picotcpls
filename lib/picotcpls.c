@@ -230,7 +230,7 @@ int tcpls_add_v4(ptls_t *tls, struct sockaddr_in *addr, int is_primary, int
     /** we already added this address */
     if (!memcmp(&current->addr, addr, sizeof(*addr))) {
       free(new_v4);
-      return -1;
+      return TCPLS_ADDR_EXIST;
     }
     current = current->next;
     n++;
@@ -1162,11 +1162,13 @@ ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t n
     stream->con->sendbuf->off = 0;
     stream->con->send_start = 0;
     tcpls->check_stream_attach_sent = 0;
+    log_warn("sent all");
     return nbytes;
   }
   else if (ret+stream->con->send_start < stream->con->sendbuf->off) {
     stream->con->send_start += ret;
   }
+  log_warn("not send all");
   return ret;
 }
 
@@ -1228,7 +1230,13 @@ int tcpls_receive(ptls_t *tls, ptls_buffer_t *decryptbuf, size_t nbytes, struct 
         }
         if(errno == ENOENT)
           return TCPLS_SOCKET_IS_CLOSED;
+
+        if(errno == EINPROGRESS)
+          return TCPLS_CONNECT_IN_PROGRESS;
         
+        if((errno == 0) && (ret == 0))
+          return TCPLS_NO_DATA_RECEIVED;
+
         log_debug("connexion closed by tcpls_receive %d:%d:%d", con->socket, errno, ret);
         connection_close(tcpls, con);
         return ret;
