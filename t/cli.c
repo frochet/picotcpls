@@ -281,7 +281,7 @@ static int handle_tcpls_read(tcpls_t *tcpls, int socket) {
   ptls_buffer_init(&buf, "", 0);
   struct timeval timeout;
   memset(&timeout, 0, sizeof(timeout));
-  while ((ret = tcpls_receive(tcpls->tls, &buf, 26276, &timeout)) == TCPLS_HOLD_DATA_TO_READ)
+  while ((ret = tcpls_receive(tcpls->tls, &buf, &timeout)) == TCPLS_HOLD_DATA_TO_READ)
     ;
   if (ret < 0) {
     fprintf(stderr, "tcpls_receive returned %d\n",ret);
@@ -428,12 +428,17 @@ static int handle_client_multipath_test(tcpls_t *tcpls, struct cli_data *data) {
       prop.client.zero_rtt = 1;
       prop.client.dest = (struct sockaddr_storage *) &tcpls->v4_addr_llist->addr;
       int ret = tcpls_handshake(tcpls->tls, &prop);
-
-      tcpls_stream_new(tcpls->tls, NULL, (struct sockaddr*)
-          &tcpls->v4_addr_llist->addr);
-      tcpls_streams_attach(tcpls->tls, 0, 1);
-      /** closing the stream id 1 */
-      tcpls_stream_close(tcpls->tls, 1, 1);
+      if (!ret) {
+        tcpls_stream_new(tcpls->tls, NULL, (struct sockaddr*)
+            &tcpls->v4_addr_llist->addr);
+        tcpls_streams_attach(tcpls->tls, 0, 1);
+        /** closing the stream id 1 */
+        tcpls_stream_close(tcpls->tls, 1, 1);
+      }
+      else {
+        fprintf(stderr, "tcpls_handshake returned %d\n", ret);
+        return -1;
+      }
     }
     /** We test a migration */
     if (received_data >= 21457280 && !has_migrated) {
