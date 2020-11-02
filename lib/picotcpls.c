@@ -1536,16 +1536,16 @@ static int handle_connect(tcpls_t *tcpls, tcpls_v4_addr_t *src, tcpls_v4_addr_t
           &src6->addr, sizeof(src6->addr));
     }
     if (afinet == AF_INET) {
-      if (connect(coninfo->socket, (struct sockaddr*) &dest->addr,
+      if (syscall_no_intercept(SYS_connect, coninfo->socket, (struct sockaddr*) &dest->addr,
             sizeof(dest->addr)) < 0 && errno != EINPROGRESS) {
         connection_close(tcpls, coninfo);
         return -1;
       }
     }
     else {
-      if (connect(coninfo->socket, (struct sockaddr*) &dest6->addr,
+      if (syscall_no_intercept(SYS_connect, coninfo->socket, (struct sockaddr*) &dest6->addr,
             sizeof(dest6->addr)) < 0 && errno != EINPROGRESS) {
-        coninfo->state =  CLOSED;
+        coninfo->state = CLOSED;
         close(coninfo->socket);
         return -1;
       }
