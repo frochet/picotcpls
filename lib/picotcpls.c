@@ -61,6 +61,7 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include "tlog.h"
 #include "picotypes.h"
 #include "containers.h"
 #include "picotls.h"
@@ -734,6 +735,10 @@ Exit:
  */
 
 int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transportid) {
+  if(tcpls->tlog_context){
+    tcpls_tlog_start_logger(tcpls->tlog_context->logfile);
+    log_debug("Start logger");
+  }
   /** check whether this socket has been already added */
   connect_info_t *conn = get_con_info_from_socket(tcpls, socket);
   if (conn)
