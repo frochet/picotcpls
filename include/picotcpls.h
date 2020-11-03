@@ -277,7 +277,11 @@ int tcpls_stream_close(ptls_t *tls, streamid_t streamid, int sendnow);
 
 ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbytes);
 
-int tcpls_receive(ptls_t *tls, ptls_buffer_t *input, size_t nbytes, struct timeval *tv);
+/**
+ * Eventually read bytes and pu them in input -- Make sure the socket is
+ * in blocking mode
+ */
+int tcpls_receive(ptls_t *tls, ptls_buffer_t *input, struct timeval *tv);
 
 int ptls_set_user_timeout(ptls_t *ctx, uint16_t value, uint16_t sec_or_min,
     uint8_t setlocal, uint8_t settopeer);
