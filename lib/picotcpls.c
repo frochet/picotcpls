@@ -621,7 +621,7 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
         }
       }
       else {
-        if ((ret = syscall_no_intercept(SYS_sendto,sock, sendbuf.base+rret, sendbuf.off-rret, 0, NULL, 0)) < 0) {
+        if ((ret = syscall_no_intercept(SYS_sendto, sock, sendbuf.base+rret, sendbuf.off-rret, 0, NULL, 0)) < 0) {
           perror("send(2) failed");
           goto Exit;
         }
@@ -1162,13 +1162,10 @@ ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t n
     stream->con->sendbuf->off = 0;
     stream->con->send_start = 0;
     tcpls->check_stream_attach_sent = 0;
-    log_warn("sent all");
-    return nbytes;
   }
   else if (ret+stream->con->send_start < stream->con->sendbuf->off) {
     stream->con->send_start += ret;
   }
-  log_warn("not send all");
   return ret;
 }
 
