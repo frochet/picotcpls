@@ -332,10 +332,10 @@ static size_t aead_encrypt(ptls_aead_context_t *aead, void
     else
       build_aad(aad, inlen + 1 + aead->algo->tag_size);
     ptls_aead_encrypt_init(aead, aead->seq++, aad, sizeof(aad));
+    off += ptls_aead_encrypt_update(aead, ((uint8_t *)output) + off, input, inlen);
     if (content_type == PTLS_CONTENT_TYPE_TCPLS_DATA) {
       off += ptls_aead_encrypt_update(aead, ((uint8_t *)output) + off, &mpseq, sizeof(uint32_t));
     }
-    off += ptls_aead_encrypt_update(aead, ((uint8_t *)output) + off, input, inlen);
     off += ptls_aead_encrypt_update(aead, ((uint8_t *)output) + off, &content_type, 1);
     off += ptls_aead_encrypt_final(aead, ((uint8_t *)output) + off);
 
