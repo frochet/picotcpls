@@ -1863,7 +1863,7 @@ int handle_tcpls_control(ptls_t *ptls, tcpls_enum_t type,
 int handle_tcpls_data_record(ptls_t *tls, struct st_ptls_record_t *rec)
 {
   tcpls_t *tcpls = tls->tcpls;
-  uint32_t mpseq = (uint32_t) rec->fragment[rec->length-sizeof(uint32_t)];
+  uint32_t mpseq = *(uint32_t *) &rec->fragment[rec->length-sizeof(uint32_t)];
   rec->length -= sizeof(mpseq);
   int ret = 0;
   if (tcpls->next_expected_mpseq == mpseq) {
