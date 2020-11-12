@@ -305,8 +305,8 @@ static int handle_tcpls_write(tcpls_t *tcpls, struct conn_to_tcpls *conntotcpls,
       /*inputfd = -1;*/
       return -1;
     }
-    if (ret < ioret) {
-      fprintf(stderr, "sending %d bytes on stream %u; not everything has been sent \n", ret, conntotcpls->streamid);
+    if (ret == TCPLS_HOLD_DATA_TO_SEND) {
+      fprintf(stderr, "sending %d bytes on stream %u; not everything has been sent \n", ioret, conntotcpls->streamid);
     }
   } else if (ioret == 0) {
     /* closed */

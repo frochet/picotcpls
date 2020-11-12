@@ -22,9 +22,9 @@
 #define STREAM_CLOSE_SIZE 4
 
 #define TCPLS_OK 0
-
 #define TCPLS_HOLD_DATA_TO_READ 1
 #define TCPLS_HOLD_OUT_OF_ORDER_DATA_TO_READ 2
+#define TCPLS_HOLD_DATA_TO_SEND 3
 
 #define COOKIE_LEN 16
 #define CONNID_LEN 16
@@ -267,7 +267,7 @@ int tcpls_stream_close(ptls_t *tls, streamid_t streamid, int sendnow);
  * stream.
  */
 
-ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbytes);
+int tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbytes);
 
 /**
  * Eventually read bytes and pu them in input -- Make sure the socket is

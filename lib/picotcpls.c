@@ -1050,10 +1050,17 @@ int tcpls_stream_close(ptls_t *tls, streamid_t streamid, int sendnow) {
  *
  * Send through streamid; or to the primary one if streamid = 0
  * Send through the primary; or switch the primary if some problem occurs
+ *
+ * @returns: TCPLS_OK if everything has been passed to the kernel buffer
+ *           TCPLS_HOLD_DATA_TO_SEND if some data still need to be sent
+ *
+ *           or -1 in case of errors:
+ *           TODO be more explicit on the potential errors
+ *
  */
 
 
-ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbytes) {
+int tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbytes) {
   tcpls_t *tcpls = tls->tcpls;
   int ret;
   tcpls_stream_t *stream;
@@ -1162,11 +1169,14 @@ ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t n
     stream->con->sendbuf->off = 0;
     stream->con->send_start = 0;
     tcpls->check_stream_attach_sent = 0;
+    return TCPLS_OK;
   }
   else if (ret+stream->con->send_start < stream->con->sendbuf->off) {
     stream->con->send_start += ret;
+    return TCPLS_HOLD_DATA_TO_SEND;
   }
-  return ret;
+  else
+    return -1;
 }
 
 /**
@@ -1272,7 +1282,7 @@ int tcpls_receive(ptls_t *tls, ptls_buffer_t *decryptbuf, struct timeval *tv) {
           }
         }
         if (rret != 0) {
-          return ret;
+          return rret;
         }
         /* merge rec_reording with decryptbuf if we can */
         multipath_merge_buffers(tcpls, decryptbuf);
