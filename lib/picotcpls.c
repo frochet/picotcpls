@@ -100,6 +100,13 @@ static int check_con_has_connected(tcpls_t *tcpls, connect_info_t *con, int *res
 static void compute_client_rtt(connect_info_t *con, struct timeval *timeout,
     struct timeval *t_initial, struct timeval *t_previous);
 static void connection_close(tcpls_t *tcpls, connect_info_t *con);
+
+#ifdef TCPLS_ENABLE_LOGGING
+static char *tlog_gettime(char *time_str);
+static FILE *tlog_open_log_file(void);
+static size_t tlog_write_log(FILE *f, char *logmsg, int len);
+static size_t tlog_write_header(FILE *f);
+#endif
 /**
  * Create a new TCPLS object
  */
@@ -110,6 +117,9 @@ void *tcpls_new(void *ctx, int is_server) {
   if (tcpls == NULL)
     return NULL;
   memset(tcpls, 0, sizeof(*tcpls));
+#ifdef TCPLS_ENABLE_LOGGING
+  tcpls->log_file = tlog_open_log_file();
+#endif
   tcpls->cookies = new_list(COOKIE_LEN, 4);
   if (is_server) {
     tls = ptls_server_new(ptls_ctx);
@@ -142,6 +152,9 @@ void *tcpls_new(void *ctx, int is_server) {
   tcpls->streams = new_list(sizeof(tcpls_stream_t), 3);
   tcpls->connect_infos = new_list(sizeof(connect_info_t), 2);
   tls->tcpls = tcpls;
+#ifdef TCPLS_ENABLE_LOGGING
+  tlog_write_header(tcpls->log_file);
+#endif
   return tcpls;
 }
 
@@ -2402,3 +2415,46 @@ void tcpls_free(tcpls_t *tcpls) {
   ptls_free(tcpls->tls);
   free(tcpls);
 }
+
+#ifdef TCPLS_ENABLE_LOGGING
+static char *tlog_gettime(char *time_str){
+  time_t current_time = time(NULL);
+  int i;
+  char *current_time_str = ctime(&current_time);
+  for(i = 0; i < strlen(current_time_str)-1; i++)
+    time_str[i] =((*(current_time_str+i)==' ') || (*(current_time_str+i)==':') )?'_':*(current_time_str+i);
+  time_str[i] = '\0';
+  return time_str;
+}
+
+static FILE *tlog_open_log_file(void){
+  char *path = malloc(31*sizeof(char));
+  char *date =  malloc(31*sizeof(char));
+  date = tlog_gettime(date);
+  *(date+31) = '\0';
+  path = strncat(date, ".tlog", 5);
+  FILE *f = fopen(path, "w+");
+  return f;
+}
+
+static size_t tlog_write_log(FILE *f, char *logmsg, int len){
+  return fwrite(logmsg, sizeof(char), len, f);
+}
+
+static size_t tlog_write_header(FILE *f){
+  size_t writen_bytes = 0;
+  char *leftbrace = "{\n";
+  char *version   = "  \"tlog_version\": \"draft-00-RC0\",\n";
+  char *title     = "  \"title\": \"first tlog file\",\n";
+  char *desc      = "  \"description\": \"Description for this group of traces (long)\",\n";
+  char *bsummary  = "  \"summary\": {\n";
+  char *esummary  = "  }\n";
+  writen_bytes   += tlog_write_log(f, leftbrace, 2);
+  writen_bytes   += tlog_write_log(f, version, 34);
+  writen_bytes   += tlog_write_log(f, title, 30);
+  writen_bytes   += tlog_write_log(f, desc, 64);
+  writen_bytes   += tlog_write_log(f, bsummary, 15);
+  writen_bytes   += tlog_write_log(f, esummary, 4);
+  return writen_bytes;
+}
+#endif

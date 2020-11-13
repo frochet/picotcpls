@@ -6,6 +6,12 @@
 #include "containers.h"
 #include "heap.h"
 #include <netinet/in.h>
+#define TCPLS_ENABLE_LOGGING 1
+
+#ifdef TCPLS_ENABLE_LOGGING 
+#include <stdio.h>
+#endif
+
 #define NBR_SUPPORTED_TCPLS_OPTIONS 5
 #define VARSIZE_OPTION_MAX_CHUNK_SIZE 4*16384 /* should be able to hold 4 records before needing to be extended */
 
@@ -16,6 +22,7 @@
  * 4096*nbr_max_streams
  */
 #define MIN_LOWIV_STREAM_INCREASE 4096
+
 
 #define TCPLS_SIGNAL_SIZE 12
 #define STREAM_SENDER_NEW_STREAM_SIZE 4
@@ -232,6 +239,10 @@ struct st_tcpls_t {
    * options
    */
   unsigned tcpls_options_confirmed : 1;
+#ifdef TCPLS_ENABLE_LOGGING
+  FILE * log_file;
+#endif
+
 };
 
 struct st_ptls_record_t;
