@@ -239,9 +239,9 @@ struct st_tcpls_t {
    * options
    */
   unsigned tcpls_options_confirmed : 1;
-#ifdef TCPLS_ENABLE_LOGGING
-  FILE * log_file;
-#endif
+
+  int log_file;
+
 
 };
 
@@ -310,5 +310,11 @@ int handle_tcpls_data_record(ptls_t *tls, struct st_ptls_record_t *rec);
 int tcpls_failover_signal(tcpls_t *tcpls, ptls_buffer_t *sendbuf);
 
 void ptls_tcpls_options_free(tcpls_t *tcpls);
+
+/** qlog**/
+typedef enum { 
+  data_record_tx, data_record_rx, 
+  control_record_tx, control_record_rx
+} tlog_record_evt ;
 
 #endif
