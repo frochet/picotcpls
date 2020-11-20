@@ -456,14 +456,18 @@ static int handle_client_multipath_test(tcpls_t *tcpls, struct cli_data *data) {
       prop.client.transportid = con->this_transportid;
       prop.client.mpjoin = 1;
       /** Make a tcpls mpjoin handshake */
-      tcpls_handshake(tcpls->tls, &prop);
-      /** Create a stream on the new connection */
-      tcpls_stream_new(tcpls->tls, NULL, (struct sockaddr*)
-          &tcpls->v6_addr_llist->addr);
-      tcpls_streams_attach(tcpls->tls, 0, 1);
-      /** Close the stream on the initial connection */
-      streamid_t *streamid2 = list_get(data->streamlist, 0);
-      tcpls_stream_close(tcpls->tls, *streamid2, 1);
+      int ret;
+
+      ret = tcpls_handshake(tcpls->tls, &prop);
+      if (!ret) {
+        /** Create a stream on the new connection */
+        tcpls_stream_new(tcpls->tls, NULL, (struct sockaddr*)
+            &tcpls->v6_addr_llist->addr);
+        tcpls_streams_attach(tcpls->tls, 0, 1);
+        /** Close the stream on the initial connection */
+        streamid_t *streamid2 = list_get(data->streamlist, 0);
+        tcpls_stream_close(tcpls->tls, *streamid2, 1);
+      }
     }
   }
   return 0;

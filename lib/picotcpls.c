@@ -536,36 +536,35 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
       coninfo.buffrag = malloc(sizeof(ptls_buffer_t));
       memset(coninfo.buffrag, 0, sizeof(ptls_buffer_t));
       coninfo.sendbuf = malloc(sizeof(ptls_buffer_t));
-    
       if (properties->client.dest->ss_family == AF_INET) {
-        con->dest = get_addr_from_sockaddr(tcpls->v4_addr_llist, (struct
+        coninfo.dest = get_addr_from_sockaddr(tcpls->v4_addr_llist, (struct
               sockaddr_in *) properties->client.dest);
-        if (!con->dest) {
+        if (!coninfo.dest) {
           fprintf(stderr, "No addr matching properties->client.dest\n");
           return -1;
         }
       /* if we want to force a src */
         if (properties->client.src) {
-          con->src = get_addr_from_sockaddr(tcpls->ours_v4_addr_llist, (struct
+          coninfo.src = get_addr_from_sockaddr(tcpls->ours_v4_addr_llist, (struct
                 sockaddr_in *) properties->client.dest);
-          if (!con->src) {
+          if (!coninfo.src) {
             fprintf(stderr, "No addr matching properties->client.src\n");
             return -1;
           }
         }
       }
       else if (properties->client.dest->ss_family == AF_INET6) {
-        con->dest6 = get_addr6_from_sockaddr(tcpls->v6_addr_llist, (struct
+        coninfo.dest6 = get_addr6_from_sockaddr(tcpls->v6_addr_llist, (struct
               sockaddr_in6 *) properties->client.dest);
-        if (!con->dest6) {
+        if (!coninfo.dest6) {
           fprintf(stderr, "No addr matching properties->client.dest\n");
           return -1;
         }
         /* if we want to force a src */
         if (properties->client.src) {
-          con->src6 = get_addr6_from_sockaddr(tcpls->v6_addr_llist, (struct
+          coninfo.src6 = get_addr6_from_sockaddr(tcpls->v6_addr_llist, (struct
                 sockaddr_in6 *) properties->client.src);
-          if (!con->src6) {
+          if (!coninfo.src6) {
             fprintf(stderr, "No addr matching properties->client.src\n");
             return -1;
           }
