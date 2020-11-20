@@ -66,6 +66,7 @@ If you have cloned picotpls from git then ensure that you have initialised the s
 ```
 % git submodule init
 % git submodule update
+% sudo apt-get install faketime libscope-guard-perl libtest-tcp-perl
 ```
 
 Build using cmake:

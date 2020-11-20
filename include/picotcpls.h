@@ -6,7 +6,12 @@
 #include "containers.h"
 #include "heap.h"
 #include <netinet/in.h>
+#define TCPLS_ENABLE_LOGGING 1
+
+#ifdef TCPLS_ENABLE_LOGGING 
 #include <stdio.h>
+#endif
+
 #define NBR_SUPPORTED_TCPLS_OPTIONS 5
 #define VARSIZE_OPTION_MAX_CHUNK_SIZE 4*16384 /* should be able to hold 4 records before needing to be extended */
 
@@ -18,14 +23,15 @@
  */
 #define MIN_LOWIV_STREAM_INCREASE 4096
 
+
 #define TCPLS_SIGNAL_SIZE 12
 #define STREAM_SENDER_NEW_STREAM_SIZE 4
 #define STREAM_CLOSE_SIZE 4
 
 #define TCPLS_OK 0
-
 #define TCPLS_HOLD_DATA_TO_READ 1
 #define TCPLS_HOLD_OUT_OF_ORDER_DATA_TO_READ 2
+#define TCPLS_HOLD_DATA_TO_SEND 3
 
 #define COOKIE_LEN 16
 #define CONNID_LEN 16
@@ -239,7 +245,13 @@ struct st_tcpls_t {
    */
   unsigned tcpls_options_confirmed : 1;
 
+<<<<<<< HEAD
   tlog_context_t *tlog_context;
+=======
+  int log_file;
+
+
+>>>>>>> 292363d9e4ab613fe634c137488f20610d0fa1be
 };
 
 struct st_ptls_record_t;
@@ -275,7 +287,7 @@ int tcpls_stream_close(ptls_t *tls, streamid_t streamid, int sendnow);
  * stream.
  */
 
-ssize_t tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbytes);
+int tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbytes);
 
 /**
  * Eventually read bytes and pu them in input -- Make sure the socket is
@@ -307,5 +319,11 @@ int handle_tcpls_data_record(ptls_t *tls, struct st_ptls_record_t *rec);
 int tcpls_failover_signal(tcpls_t *tcpls, ptls_buffer_t *sendbuf);
 
 void ptls_tcpls_options_free(tcpls_t *tcpls);
+
+/** qlog**/
+typedef enum { 
+  data_record_tx, data_record_rx, 
+  control_record_tx, control_record_rx
+} tlog_record_evt ;
 
 #endif

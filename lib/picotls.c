@@ -332,10 +332,10 @@ static size_t aead_encrypt(ptls_aead_context_t *aead, void
     else
       build_aad(aad, inlen + 1 + aead->algo->tag_size);
     ptls_aead_encrypt_init(aead, aead->seq++, aad, sizeof(aad));
+    off += ptls_aead_encrypt_update(aead, ((uint8_t *)output) + off, input, inlen);
     if (content_type == PTLS_CONTENT_TYPE_TCPLS_DATA) {
       off += ptls_aead_encrypt_update(aead, ((uint8_t *)output) + off, &mpseq, sizeof(uint32_t));
     }
-    off += ptls_aead_encrypt_update(aead, ((uint8_t *)output) + off, input, inlen);
     off += ptls_aead_encrypt_update(aead, ((uint8_t *)output) + off, &content_type, 1);
     off += ptls_aead_encrypt_final(aead, ((uint8_t *)output) + off);
 
@@ -371,13 +371,15 @@ int buffer_push_encrypted_records(ptls_t *tls, ptls_buffer_t *buf, uint8_t type,
           mpseq = tls->tcpls->send_mpseq++;
           seq_size = sizeof(mpseq);
         }
+        /** A bit hardcoded at the moment -- TODO define
+         * TCPLS_MULTIPATH_MAX_PLAINTEXT_RECORD_SIZE */
         if (chunk_size > PTLS_MAX_PLAINTEXT_RECORD_SIZE-seq_size)
             chunk_size = PTLS_MAX_PLAINTEXT_RECORD_SIZE-seq_size;
         buffer_push_record(buf, PTLS_CONTENT_TYPE_APPDATA, {
             if ((ret = ptls_buffer_reserve(buf, chunk_size + ctx->algo->tag_size + seq_size + 1 )) != 0)
                 goto Exit;
 
-            buf->off += aead_encrypt(ctx, buf->base + buf->off, src, chunk_size+seq_size,
+            buf->off += aead_encrypt(ctx, buf->base + buf->off, src, chunk_size,
                 mpseq, type);
             // push this record within our buffer TODO
         });
