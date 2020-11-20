@@ -383,11 +383,6 @@ int buffer_push_encrypted_records(ptls_t *tls, ptls_buffer_t *buf, uint8_t type,
                 mpseq, type);
             // push this record within our buffer TODO
         });
-#ifdef TCPLS_ENABLE_LOGGING
-        //if(type == PTLS_CONTENT_TYPE_TCPLS_DATA)
-          tlog_transport_log(tls->tcpls, data_record_tx, mpseq,
-  chunk_size, PTLS_CONTENT_TYPE_APPDATA, type, ctx->seq);
-#endif
         src += chunk_size;
         len -= chunk_size;
     }

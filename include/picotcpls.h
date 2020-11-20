@@ -6,11 +6,6 @@
 #include "containers.h"
 #include "heap.h"
 #include <netinet/in.h>
-#define TCPLS_ENABLE_LOGGING 1
-
-#ifdef TCPLS_ENABLE_LOGGING 
-#include <stdio.h>
-#endif
 
 #define NBR_SUPPORTED_TCPLS_OPTIONS 5
 #define VARSIZE_OPTION_MAX_CHUNK_SIZE 4*16384 /* should be able to hold 4 records before needing to be extended */
@@ -166,11 +161,6 @@ typedef struct st_tcpls_stream {
 } tcpls_stream_t;
 
 
-typedef struct st_tlog_context_t{
-  FILE *logfile;
-}tlog_context_t;
-
-
 struct st_tcpls_t {
   ptls_t *tls;
   /* Sending buffer */
@@ -244,14 +234,6 @@ struct st_tcpls_t {
    * options
    */
   unsigned tcpls_options_confirmed : 1;
-
-<<<<<<< HEAD
-  tlog_context_t *tlog_context;
-=======
-  int log_file;
-
-
->>>>>>> 292363d9e4ab613fe634c137488f20610d0fa1be
 };
 
 struct st_ptls_record_t;
@@ -320,11 +302,4 @@ int tcpls_failover_signal(tcpls_t *tcpls, ptls_buffer_t *sendbuf);
 
 void ptls_tcpls_options_free(tcpls_t *tcpls);
 
-/** qlog**/
-typedef enum { 
-  data_record_tx, data_record_rx, 
-  control_record_tx, control_record_rx
-} tlog_record_evt ;
-int tlog_transport_log(tcpls_t *tcpls, const tlog_record_evt evt, uint32_t mpseq,
-  size_t record_size, uint8_t type, uint8_t ttype, uint32_t seq);
 #endif

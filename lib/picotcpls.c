@@ -61,7 +61,6 @@
 #include <sys/time.h>
 #include <unistd.h>
 #include <fcntl.h>
-#include "tlog.h"
 #include "picotypes.h"
 #include "containers.h"
 #include "picotls.h"
@@ -102,12 +101,6 @@ static void compute_client_rtt(connect_info_t *con, struct timeval *timeout,
     struct timeval *t_initial, struct timeval *t_previous);
 static void connection_close(tcpls_t *tcpls, connect_info_t *con);
 
-#ifdef TCPLS_ENABLE_LOGGING
-static char *tlog_gettime(char *time_str);
-static int tlog_open_log_file(const char *vantagepoint);
-static size_t tlog_init_log(tcpls_t *tcpls);
-static int tlog_close_log(tcpls_t *tcpls);
-#endif
 /**
  * Create a new TCPLS object
  */
@@ -150,9 +143,6 @@ void *tcpls_new(void *ctx, int is_server) {
   tcpls->streams = new_list(sizeof(tcpls_stream_t), 3);
   tcpls->connect_infos = new_list(sizeof(connect_info_t), 2);
   tls->tcpls = tcpls;
-#ifdef TCPLS_ENABLE_LOGGING
-  tlog_init_log(tcpls);
-#endif
   return tcpls;
 }
 
@@ -744,10 +734,6 @@ Exit:
  */
 
 int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transportid) {
-  if(tcpls->tlog_context){
-    tcpls_tlog_start_logger(tcpls->tlog_context->logfile);
-    log_debug("Start logger");
-  }
   /** check whether this socket has been already added */
   connect_info_t *conn = get_con_info_from_socket(tcpls, socket);
   if (conn)
@@ -1890,7 +1876,6 @@ int handle_tcpls_data_record(ptls_t *tls, struct st_ptls_record_t *rec)
   uint32_t mpseq = *(uint32_t *) &rec->fragment[rec->length-sizeof(uint32_t)];
   rec->length -= sizeof(mpseq);
   int ret = 0;
-  tlog_transport_log(tls->tcpls, data_record_rx, mpseq, rec->length, rec->type, rec->type, rec->seq);
   if (tcpls->next_expected_mpseq == mpseq) {
     // then we push this fragment in the received buffer
     tcpls->next_expected_mpseq++;
@@ -2357,9 +2342,6 @@ void connection_close(tcpls_t *tcpls, connect_info_t *con) {
 void tcpls_free(tcpls_t *tcpls) {
   if (!tcpls)
     return;
-#ifdef TCPLS_ENABLE_LOGGING
-  tlog_close_log(tcpls);
-#endif
 
   ptls_buffer_dispose(tcpls->recvbuf);
   ptls_buffer_dispose(tcpls->sendbuf);
@@ -2421,84 +2403,3 @@ void tcpls_free(tcpls_t *tcpls) {
   ptls_free(tcpls->tls);
   free(tcpls);
 }
-
-#ifdef TCPLS_ENABLE_LOGGING
-static char *tlog_gettime(char *time_str){
-  time_t current_time = time(NULL);
-  int i;
-  char *current_time_str = ctime(&current_time);
-  for(i = 0; i < strlen(current_time_str)-1; i++)
-    time_str[i] =((*(current_time_str+i)==' ') || (*(current_time_str+i)==':') )?'_':*(current_time_str+i);
-  time_str[i] = '\0';
-  return time_str;
-}
-
-static int tlog_open_log_file(const char *vantagepoint){
-  char *path = malloc(43*sizeof(char));
-  char *date =  malloc(31*sizeof(char));
-  date = tlog_gettime(date);
-  *(date+31) = '\0';
-  snprintf(path, 43, "/tmp/%s%s%s", date, vantagepoint, ".qlog");
-  int fd = open(path, O_CREAT | O_WRONLY ,
-                   S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
-  log_debug("opening file (%s) (%d)", path, fd);
-  if(fd < 0){
-    log_debug("opening file (%d) (%d) (%s)", fd, errno, path);
-  }
-  return fd;
-}
-
-static size_t tlog_init_log(tcpls_t *tcpls){
-  int fd;
-  char * vantage_point = tcpls->tls->is_server?"server":"client";
-  fd = tlog_open_log_file(vantage_point);
-  tcpls->log_file = fd;  
-  size_t writen_bytes = 0;
-  writen_bytes = dprintf(tcpls->log_file, "{\n"
-                    "  \"qlog_version\": \"draft-01\",\n"
-                    "  \"title\": \"first tlog file\",\n"
-                    "  \"description\": \"Description for this group of traces (long)\",\n"
-                    "  \"summary\": {\n"
-                    "  },\n"
-                    "  \"traces\": [\n"
-                    "   {\n"
-                    "     \"vantage_point\":{\"type\":\" %s \" },\n"
-                    "     \"configuration \" : {\"time_units\" : \"us\"},\n"
-                    "     \"common_fields\" : { \n"
-                    "        \"group_id\": \"%d\",\n"
-                    "        \"protocol_type\": \"TCPLS\" \n"
-                    "     },\n"
-                    "     \"events_fields\" : [\"delta_time\", \"category\", \"event\", \"trigger\", \"data\"],\n"
-                    "     \"events\":[", tcpls->tls->is_server?"server":"client", *tcpls->connid);
-  return writen_bytes;
-}
-
-static int tlog_close_log(tcpls_t *tcpls){
-  size_t writen_bytes = 0;
-  writen_bytes = dprintf(tcpls->log_file, "]}]}");
-  close(tcpls->log_file);
-  return writen_bytes;
-}
-
-int tlog_transport_log(tcpls_t *tcpls, const tlog_record_evt evt, uint32_t mpseq,
-  size_t record_size, uint8_t type, uint8_t ttype, uint32_t seq){
-  static int start = 0;
-  static const char * const evt_str[] = {
-    [data_record_tx] = "data_record_sent",
-    [data_record_rx] = "data_record_received",
-    [control_record_tx] = "control_record_sent",
-    [control_record_rx] = "control_record_received"
-  };
-  start ? dprintf(tcpls->log_file,
-            ",\"transport\",\"%s\",{\"record_type\":\"%u\",\"header\":{"
-            "\"record_size\":\"%lu\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_seq\" : \"%u\" ",
-            evt_str[evt], type, record_size, mpseq, ttype,seq) : dprintf(tcpls->log_file,
-            "\"transport\",\"%s\",{\"record_type\":\"%u\",\"header\":{"
-            "\"record_size\":\"%lu\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_seq\" : \"%u\" ",
-            evt_str[evt], type, record_size, mpseq, ttype,seq);
-  dprintf(tcpls->log_file, "}") ;
-  start = 1;
-  log_debug("write here on log %d", tcpls->log_file);
-  return 0;
-}
-#endif
