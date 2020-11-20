@@ -103,10 +103,9 @@ static void connection_close(tcpls_t *tcpls, connect_info_t *con);
 
 #ifdef TCPLS_ENABLE_LOGGING
 static char *tlog_gettime(char *time_str);
-static int tlog_open_log_file(void);
+static int tlog_open_log_file(const char *vantagepoint);
 static size_t tlog_init_log(tcpls_t *tcpls);
 static int tlog_close_log(tcpls_t *tcpls);
-static int tlog_transport_log(tcpls_t *tcpls, const tlog_record_evt evt);
 #endif
 /**
  * Create a new TCPLS object
@@ -1135,7 +1134,6 @@ int tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbyte
   // get the right  aead context matching the stream id
   // This is done for compabitility with original PTLS's unit tests
   tcpls->tls->traffic_protection.enc.aead = stream->aead_enc;
-  tlog_transport_log(tls->tcpls, data_record_tx);
   ret = ptls_send(tcpls->tls, stream->con->sendbuf, input, nbytes);
   tcpls->tls->traffic_protection.enc.aead = remember_aead;
   switch (ret) {
@@ -1284,7 +1282,6 @@ int tcpls_receive(ptls_t *tls, ptls_buffer_t *decryptbuf, struct timeval *tv) {
               input_size = ret;
               do {
                 consumed = input_size - input_off;
-                tlog_transport_log(tls->tcpls, data_record_rx);
                 rret = ptls_receive(tls, decryptbuf, buf_to_use, input + input_off, &consumed);
                 input_off += consumed;
               } while (rret == 0 && input_off < input_size);
@@ -1889,7 +1886,7 @@ int handle_tcpls_data_record(ptls_t *tls, struct st_ptls_record_t *rec)
   uint32_t mpseq = *(uint32_t *) &rec->fragment[rec->length-sizeof(uint32_t)];
   rec->length -= sizeof(mpseq);
   int ret = 0;
-  tlog_transport_log(tls->tcpls, data_record_rx);
+  tlog_transport_log(tls->tcpls, data_record_rx, mpseq, rec->length, rec->type, rec->type, rec->seq);
   if (tcpls->next_expected_mpseq == mpseq) {
     // then we push this fragment in the received buffer
     tcpls->next_expected_mpseq++;
@@ -1940,7 +1937,6 @@ int handle_tcpls_control_record(ptls_t *tls, struct st_ptls_record_t *rec)
   }
 
   type = *(tcpls_enum_t*) rec->fragment;
-  tlog_transport_log(tls->tcpls, control_record_rx);
   /** Check whether type is a variable len option */
   if (is_varlen(type)){
     /*size_t optsize = ntoh32(rec->fragment+sizeof(type));*/
@@ -2433,19 +2429,26 @@ static char *tlog_gettime(char *time_str){
   return time_str;
 }
 
-static int tlog_open_log_file(void){
-  char *path = malloc(31*sizeof(char));
+static int tlog_open_log_file(const char *vantagepoint){
+  char *path = malloc(43*sizeof(char));
   char *date =  malloc(31*sizeof(char));
   date = tlog_gettime(date);
   *(date+31) = '\0';
-  path = strncat(date, ".qlog", 5);
-  int fd = open(path, O_CREAT | O_WRONLY | O_CLOEXEC,
+  snprintf(path, 43, "/tmp/%s%s%s", date, vantagepoint, ".qlog");
+  int fd = open(path, O_CREAT | O_WRONLY ,
                    S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+  log_debug("opening file (%s) (%d)", path, fd);
+  if(fd < 0){
+    log_debug("opening file (%d) (%d) (%s)", fd, errno, path);
+  }
   return fd;
 }
 
 static size_t tlog_init_log(tcpls_t *tcpls){
-  tcpls->log_file = tlog_open_log_file();
+  int fd;
+  char * vantage_point = tcpls->tls->is_server?"server":"client";
+  fd = tlog_open_log_file(vantage_point);
+  tcpls->log_file = fd;  
   size_t writen_bytes = 0;
   writen_bytes = dprintf(tcpls->log_file, "{\n"
                     "  \"qlog_version\": \"draft-01\",\n"
@@ -2473,18 +2476,25 @@ static int tlog_close_log(tcpls_t *tcpls){
   return writen_bytes;
 }
 
-static int tlog_transport_log(tcpls_t *tcpls, const tlog_record_evt evt){
+int tlog_transport_log(tcpls_t *tcpls, const tlog_record_evt evt, uint32_t mpseq,
+  size_t record_size, uint8_t type, uint8_t ttype, uint32_t seq){
+  static int start = 0;
   static const char * const evt_str[] = {
     [data_record_tx] = "data_record_sent",
     [data_record_rx] = "data_record_received",
     [control_record_tx] = "control_record_sent",
     [control_record_rx] = "control_record_received"
   };
-  dprintf(tcpls->log_file,
-            ",\"transport\",\"%s\",\"Z\",{\"packet_type\":\"Q\",\"header\":{"
-            "\"packet_size\":W",
-            evt_str[evt]);
-  dprintf(tcpls->log_file, "}");
+  start ? dprintf(tcpls->log_file,
+            ",\"transport\",\"%s\",{\"record_type\":\"%u\",\"header\":{"
+            "\"record_size\":\"%lu\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_seq\" : \"%u\" ",
+            evt_str[evt], type, record_size, mpseq, ttype,seq) : dprintf(tcpls->log_file,
+            "\"transport\",\"%s\",{\"record_type\":\"%u\",\"header\":{"
+            "\"record_size\":\"%lu\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_seq\" : \"%u\" ",
+            evt_str[evt], type, record_size, mpseq, ttype,seq);
+  dprintf(tcpls->log_file, "}") ;
+  start = 1;
+  log_debug("write here on log %d", tcpls->log_file);
   return 0;
 }
 #endif
