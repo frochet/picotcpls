@@ -325,5 +325,6 @@ typedef enum {
   data_record_tx, data_record_rx, 
   control_record_tx, control_record_rx
 } tlog_record_evt ;
-
+int tlog_transport_log(tcpls_t *tcpls, const tlog_record_evt evt, uint32_t mpseq,
+  size_t record_size, uint8_t type, uint8_t ttype, uint32_t seq);
 #endif
