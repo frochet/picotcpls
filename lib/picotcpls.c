@@ -62,7 +62,7 @@
 #include "containers.h"
 #include "picotls.h"
 #include "picotcpls.h"
-#include "tlog.h"
+#include "../qlog/qlog.h"
 /** Forward declarations */
 static int tcpls_init_context(ptls_t *ptls, const void *data, size_t datalen,
     tcpls_enum_t type, uint8_t setlocal, uint8_t settopeer);
@@ -114,6 +114,7 @@ void *tcpls_new(void *ctx, int is_server) {
   tcpls_t *tcpls  = malloc(sizeof(*tcpls));
   if (tcpls == NULL)
     return NULL;
+  qlog_load_bpf_prog();
   memset(tcpls, 0, sizeof(*tcpls));
   tcpls->cookies = new_list(COOKIE_LEN, 4);
   if (is_server) {
