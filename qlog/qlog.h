@@ -1,1 +1,1 @@
-int qlog_load_bpf_prog(void);
+int qlog_load_bpf_prog(char *int_f);
