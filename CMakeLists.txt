@@ -14,6 +14,7 @@ ENDIF ()
 
 SET(CMAKE_C_FLAGS "-std=c99 -g3 -Wall ${CC_WARNING_FLAGS} ${CMAKE_C_FLAGS}")
 SET(PYTHON_EXECUTABLE, "python3")
+SET(CLANG, "clang-10")
 INCLUDE_DIRECTORIES(
     deps/cifra/src/ext
     deps/cifra/src
@@ -21,6 +22,7 @@ INCLUDE_DIRECTORIES(
     deps/picotest
     include
     ${CMAKE_CURRENT_BINARY_DIR})
+
 SET(MINICRYPTO_LIBRARY_FILES
     deps/micro-ecc/uECC.c
     deps/cifra/src/aes.c
@@ -67,7 +69,7 @@ IF (BROTLI_DEC_FOUND AND BROTLI_ENC_FOUND)
 ENDIF ()
 
 ADD_LIBRARY(picotls-core ${CORE_FILES})
-TARGET_LINK_LIBRARIES(picotls-core ${CORE_EXTRA_LIBS})
+TARGET_LINK_LIBRARIES(picotls-core ${CORE_EXTRA_LIBS}  )
 ADD_LIBRARY(picotls-minicrypto
     ${MINICRYPTO_LIBRARY_FILES}
     lib/cifra.c
@@ -95,18 +97,21 @@ ADD_EXECUTABLE(test-minicrypto.t
     lib/cifra/aes256.c
     lib/cifra/random.c)
 
+TARGET_LINK_LIBRARIES(test-minicrypto.t ${CMAKE_SOURCE_DIR}/libqlog.so  "-lelf" "-lbpf" )
+
 SET(TEST_EXES test-minicrypto.t)
+
 
 FIND_PACKAGE(OpenSSL)
 IF (OPENSSL_FOUND AND NOT (OPENSSL_VERSION VERSION_LESS "1.0.1"))
     MESSAGE(STATUS "  Enabling OpenSSL support")
     INCLUDE_DIRECTORIES(${OPENSSL_INCLUDE_DIR})
     ADD_LIBRARY(picotls-openssl lib/openssl.c)
-    TARGET_LINK_LIBRARIES(picotls-openssl ${OPENSSL_LIBRARIES} picotls-core ${CMAKE_DL_LIBS})
+    TARGET_LINK_LIBRARIES(picotls-openssl ${OPENSSL_LIBRARIES} picotls-core ${CMAKE_DL_LIBS} ${CMAKE_SOURCE_DIR}/libqlog.so )
     ADD_EXECUTABLE(cli t/cli.c lib/pembase64.c)
-    TARGET_LINK_LIBRARIES(cli picotls-openssl picotls-core)
+    TARGET_LINK_LIBRARIES(cli picotls-openssl picotls-core ${CMAKE_SOURCE_DIR}/libqlog.so "-lelf" "-lbpf")
     ADD_EXECUTABLE(picotls-esni src/esni.c)
-    TARGET_LINK_LIBRARIES(picotls-esni picotls-openssl picotls-core ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS})
+    TARGET_LINK_LIBRARIES(picotls-esni picotls-openssl picotls-core ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS} ${CMAKE_SOURCE_DIR}/libqlog.so "-lelf" "-lbpf")
 
     ADD_EXECUTABLE(test-openssl.t
         ${MINICRYPTO_LIBRARY_FILES}
@@ -124,11 +129,11 @@ IF (OPENSSL_FOUND AND NOT (OPENSSL_VERSION VERSION_LESS "1.0.1"))
         ${CORE_TEST_FILES}
         t/openssl.c)
     SET_TARGET_PROPERTIES(test-openssl.t PROPERTIES COMPILE_FLAGS "-DPTLS_MEMORY_DEBUG=1")
-    TARGET_LINK_LIBRARIES(test-openssl.t ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS})
+    TARGET_LINK_LIBRARIES(test-openssl.t  ${CMAKE_SOURCE_DIR}/libqlog.so "-lelf" "-lbpf" ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS} )
 
     ADD_EXECUTABLE(ptlsbench t/ptlsbench.c)
     SET_TARGET_PROPERTIES(ptlsbench PROPERTIES COMPILE_FLAGS "-DPTLS_MEMORY_DEBUG=1")
-    TARGET_LINK_LIBRARIES(ptlsbench picotls-minicrypto picotls-openssl picotls-core ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS})
+    TARGET_LINK_LIBRARIES(ptlsbench picotls-minicrypto picotls-openssl picotls-core ${OPENSSL_LIBRARIES} ${CMAKE_DL_LIBS} ${CMAKE_SOURCE_DIR}/libqlog.so "-lelf" "-lbpf")
 
     SET(TEST_EXES ${TEST_EXES} test-openssl.t)
 ELSE ()
