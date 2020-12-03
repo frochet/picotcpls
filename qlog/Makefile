@@ -3,18 +3,12 @@ CLANG = clang-10
 
 BPFCODE = qlog_kern
 
-SRCDIRS  = /kernel-src
-INCLUDEDIR = /kernel-src
+SRCDIRS  = /home/kate/kernel-src
+INCLUDEDIR = /home/kate/kernel-src
 
 BPFTOOLS = $(SRCDIRS)/samples/bpf
 BPFLOADER = $(BPFTOOLS)/bpf_load
 
-CCINCLUDE += -I$(INCLUDEDIR)/tools/testing/selftests
-CCINCLUDE += -I$(INCLUDEDIR)/tools/testing/selftests/bpf
-CCINCLUDE += -I$(INCLUDEDIR)/tools/lib
-CCINCLUDE += -I$(INCLUDEDIR)/arch/x86/include
-CCINCLUDE += -I$(INCLUDEDIR)/arch/x86/include/generated
-CCINCLUDE += -I$(INCLUDEDIR)/include
 
 LOADINCLUDE += -I$(INCLUDEDIR)/samples/bpf
 LOADINCLUDE += -I$(INCLUDEDIR)/tools/lib
@@ -31,7 +25,7 @@ clean:
 	rm -f *.o *.so $(EXECABLE)
 
 qlog_kern: ${BPFCODE.c}
-	$(CLANG) -O2 -target bpf -c $(BPFCODE:=.c) $(CCINCLUDE) -o ${BPFCODE:=.o}
+	$(CLANG) -O2 -target bpf -c $(BPFCODE:=.c)  -o ${BPFCODE:=.o}
 
 bpfload:
 	$(CLANG) $(CFLAGS) -c -fPIC -o bpf_load.o $(LOADINCLUDE)  $(BPFLOADER:=.c)
