@@ -16,8 +16,8 @@ tcpls_record_fifo_t *tcpls_record_queue_new(int max_record_num) {
   memset(fifo, 0, sizeof(*fifo));
   if (fifo == NULL)
     return NULL;
-  fifo->queue = malloc(max_record_num*sizeof(struct st_ptls_record_t));
-  memset(fifo->queue, 0, max_record_num*sizeof(struct st_ptls_record_t));
+  fifo->queue = malloc(max_record_num*2*sizeof(uint32_t));
+  memset(fifo->queue, 0, max_record_num*2*sizeof(uint32_t));
   if (fifo->queue == NULL)
     goto Exit;
   fifo->size = 0;
@@ -35,29 +35,38 @@ Exit:
  *
  * return MEMORY_FULL, OK
  */
-queue_ret_t tcpls_record_queue_push(tcpls_record_fifo_t *fifo, struct st_ptls_record_t *rec) {
-  if (fifo->size == fifo->max_record_num)
+queue_ret_t tcpls_record_queue_push(tcpls_record_fifo_t *fifo, uint32_t
+    stream_seq, uint32_t reclen) { if (fifo->size == fifo->max_record_num)
     return MEMORY_FULL;
-  memcpy(&fifo->queue[fifo->front_idx], rec, sizeof(*rec));
+  memcpy(&fifo->queue[fifo->front_idx], &stream_seq, sizeof(uint32_t));
+  memcpy(&fifo->queue[fifo->front_idx+4], &reclen, sizeof(uint32_t));
   fifo->size++;
-  if (fifo->front_idx == fifo->max_record_num-1) {
+  if (fifo->front_idx == (fifo->max_record_num-1)*(2*sizeof(uint32_t))) {
     fifo->front_idx = 0;
   }
   else {
-    fifo->front_idx++;
+    fifo->front_idx += 2*sizeof(uint32_t);
   }
   return OK;
+}
+
+queue_ret_t tcpls_record_queue_pop(tcpls_record_fifo_t *fifo, uint32_t *stream_seq, uint32_t *reclen) {
+  if (fifo->size == 0)
+    return EMPTY;
+  *stream_seq = *(uint32_t *) &fifo->queue[fifo->back_idx];
+  *reclen = *(uint32_t *) &fifo->queue[fifo->back_idx+4];
+  return tcpls_record_queue_del(fifo, 1);
 }
 
 queue_ret_t tcpls_record_queue_del(tcpls_record_fifo_t *fifo, int n) {
   while (n > 0) {
     if (fifo->size == 0)
       return EMPTY;
-    if (fifo->back_idx == fifo->max_record_num-1) {
+    if (fifo->back_idx == (fifo->max_record_num - 1)*2*sizeof(uint32_t)) {
       fifo->back_idx = 0;
     }
     else {
-      fifo->back_idx++;
+      fifo->back_idx+= 2*sizeof(uint32_t);
     }
     fifo->size--;
     n--;
@@ -65,10 +74,16 @@ queue_ret_t tcpls_record_queue_del(tcpls_record_fifo_t *fifo, int n) {
   return OK;
 }
 
+uint32_t tcpls_record_queue_seq(tcpls_record_fifo_t *fifo) {
+  assert(fifo);
+  assert(fifo->queue);
+  return *(uint32_t *) &fifo->queue[fifo->back_idx];
+}
+
 void tcpls_record_fifo_free(tcpls_record_fifo_t *fifo) {
   if (!fifo)
     return;
-  if (!fifo->queue){
+  if (!fifo->queue) {
     free(fifo);
     return;
   }
@@ -152,6 +167,15 @@ int list_remove(list_t *list, void *item) {
     }
   }
   return -1;
+}
+
+/**
+ * Virtually clean the list
+ */
+void list_clean(list_t *list) {
+  if (!list)
+    return;
+  list->size = 0;
 }
 
 void list_free(list_t *list) {

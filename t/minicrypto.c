@@ -116,7 +116,7 @@ static void test_hrr(void)
     ok(consumed == sbuf.off);
     sbuf.off = 0;
 
-    ret = ptls_send(client, &cbuf, "hello world", 11);
+    ret = ptls_send(client, 0, &cbuf, "hello world", 11);
     ok(ret == 0);
 
     consumed = cbuf.off;

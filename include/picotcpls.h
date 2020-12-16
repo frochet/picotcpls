@@ -35,12 +35,21 @@
 #define COOKIE_LEN 16
 #define CONNID_LEN 16
 
-/** TCP options we would support in the TLS context */
+#define SENDING_ACKS_RECORDS_WINDOW 16
+
+// MAX_ENCRYPTED_RECORD_SIZE * 16
+#define SENDING_ACKS_BYTES_WINDOW 266240
+
+/** TCPLS messages we would support in the TLS context */
 typedef enum tcpls_enum_t {
+  NONE, // this one is just for plain data
+  CONTROL_VARLEN_BEGIN,
   BPF_CC,
   CONNID,
   COOKIE,
+  DATA_ACK,
   FAILOVER,
+  FAILOVER_END,
   MPJOIN,
   MULTIHOMING_v6,
   MULTIHOMING_v4,
@@ -53,16 +62,25 @@ typedef enum tcpls_enum_t {
 
 typedef enum tcpls_event_t {
   CONN_CLOSED,
+  CONN_FAILED,
   CONN_OPENED,
   STREAM_CLOSED,
-  STREAM_OPENED
+  STREAM_OPENED,
+  STREAM_NETWORK_FAILURE,
+  STREAM_NETWORK_RECOVERED,
+  /* tells the app that we may have an address to add */
+  ADD_ADDR,
+  /* tells the app that we added an address! */
+  ADDED_ADDR,
+  REMOVE_ADDR
 } tcpls_event_t;
 
 typedef enum tcpls_tcp_state_t {
   CLOSED,
+  FAILED, /*This con encountered a network failure */
   CONNECTING,
   CONNECTED,
-  WANTS_WRITE
+  JOINED
 } tcpls_tcp_state_t;
 
 struct st_tcpls_options_t {
@@ -90,23 +108,32 @@ typedef struct st_tcpls_v6_addr_t {
 typedef struct st_connect_info_t {
   tcpls_tcp_state_t state; /* Connection state */
   int socket;
-  /** Fragmentation buffer for TCPLS control records received over this socket
-   * */
+  /**
+   * Fragmentation buffer for TCPLS control records received over this
+   * connection
+   **/
   ptls_buffer_t *buffrag;
-  
-  /* Per connection sending buffer */
-  ptls_buffer_t *sendbuf;
-  
-  int send_start;
-  /** end positio of the stream control event message in the current sending
-   * buffer*/
-  int send_stream_attach_in_sendbuf_pos;
-  /** Id given for this transport stream */
+  /** nbr bytes received since the last ackknowledgment sent */
+  uint32_t nbr_bytes_received;
+  /** nbr records received on this con since the last ack sent */
+  uint32_t nbr_records_received;
+  /** total number of DATA bytes received over this con */
+  uint64_t tot_data_bytes_received;
+  /** total number of CONTROL bytess received over this con */
+  uint64_t tot_control_bytes_received;
+  /** Id given for this connection */
   uint32_t this_transportid;
-  /** Id of the peer fort this transport stream */
+  /** Id of the peer fort this connection */
   uint32_t peer_transportid;
   /** Is this connection primary? Primary means the default one */
   unsigned is_primary : 1;
+  /* con_to_failover received a FAILOVER message with a stream linked to this
+   * con.
+   * If we have data in our send_queue we need to send them over con and then destroy the
+   * connection 
+   */
+  uint32_t transportid_to_failover;
+
   /** RTT of this connection, computed by the client and ?eventually given to the
    * server TODO*/
   struct timeval connect_time;
@@ -120,15 +147,8 @@ typedef struct st_connect_info_t {
 } connect_info_t;
 
 typedef struct st_tcpls_stream {
-  /** Buffer for potentially lost records in case of failover, loss of
-   * connection. Also potentially used for fair usage of the link w.r.t multiple
-   * streams
-   **/
-  tcpls_record_fifo_t *send_queue;
+  
   streamid_t streamid;
-  /* Per stream fragmentation buffer -- temporaly removed */
-  //ptls_buffer_t *streambuffrag;
-
   /** when this stream should first send an attach event before
    * sending any packet */
   unsigned need_sending_attach_event  : 1;
@@ -155,8 +175,41 @@ typedef struct st_tcpls_stream {
   ptls_aead_context_t *aead_enc;
   /* Context for decryption */
   ptls_aead_context_t *aead_dec;
-  /** Attached connection */
-  connect_info_t *con;
+  /* Used for retaining records that have not been acknowledged yet */
+  tcpls_record_fifo_t *send_queue;
+  /* The last sequence number whom which we decrypted and processed some data
+   * from that stream */
+  uint32_t last_seq_received;
+  /* Number of records received on this stream since the last acknowledgement sent */
+  uint32_t nbr_records_since_last_ack;
+  /* Number of bytes received on this stream since the last acknowledgement sent */
+  uint32_t nbr_bytes_since_last_ack;
+
+  /* Per stream sending buffer */
+  ptls_buffer_t *sendbuf;
+  /** for sending buffer */
+  int send_start;
+  /** end position of the stream control event message in the current sending
+   * buffer*/
+  int send_stream_attach_in_sendbuf_pos;
+  /** Attached connection -- must be the index of the connection within
+   * tcpls->connect_infos
+   **/
+  uint32_t transportid;
+  /**
+   * Origin attached con
+   * In case of failover, we mark orcon as the origin con
+   * of this stream, before it got moved
+   **/
+  uint32_t orcon_transportid;
+  /*Used when failover is enable -- tell us from which seq number is expected remain in our sending
+   *buffer for this stream (last_seq_poped+1 is expected to be the next one in sendbuf if one is)
+   *We use this information within a FAILOVER message to tell the peer which number is expected to
+   *decrypt correctly */
+
+  unsigned int failover_end_sent : 1;
+  unsigned int failover_end_received : 1;
+  uint32_t last_seq_poped;
 } tcpls_stream_t;
 
 
@@ -164,20 +217,16 @@ struct st_tcpls_t {
   ptls_t *tls;
   /* Sending buffer */
   ptls_buffer_t *sendbuf;
-  
   /** If we did not manage to empty sendbuf in one send call */
   int send_start;
-
   /* Receiving buffer */
   ptls_buffer_t *recvbuf;
+  /**
+   * Fragmentation buffer for TCPLS -- used when no streams are attached yet
+   * */
+  ptls_buffer_t *buffrag;
   /* Record buffer for multipath reordering */
   ptls_buffer_t *rec_reordering;
-  /** If the application asked for less bytes than a full record hold within
-   * the reordering buffer, then we need to save the position of the missing
-   * bytes for delivery at the next tcpls_receive() call */
-  uint32_t fragment_pos;
-  /** length of the saved fragment */
-  uint32_t fragment_length;
   /** A priority queue to handle reording records */
   heap *priority_q;
   /** sending mpseq number */
@@ -187,13 +236,42 @@ struct st_tcpls_t {
   /** Linked List of address to be used for happy eyeball
    * and for failover
    */
+  /* Size of a varlen option set when we receive a CONTROL_VARLEN_BEGIN */
+  uint32_t varlen_opt_size;
   /** Destination addresses */
   tcpls_v4_addr_t *v4_addr_llist;
   tcpls_v6_addr_t *v6_addr_llist;
   /** Our addresses */
   tcpls_v4_addr_t *ours_v4_addr_llist;
   tcpls_v6_addr_t *ours_v6_addr_llist;
-
+  
+  /**
+   *  enable failover; used for rst resistance in case of 
+   *  network outage .. If multiple connections are available
+   *  This is costly since it also enable ACKs at the TCPLS layer, and
+   *  bufferization of the data sent 
+   *  */
+  unsigned int enable_failover : 1;
+  /**
+   * Enable multipath ordering, setting a multipath sequence number in TCPLS data
+   * messages, and within control informations that apply for multipathing
+   * XXX currently, no options are multipath-capable; Eventually every VARLEN
+   * option should become multipath capable.
+   *
+   * Note; not activating multipath still allow to use multiple paths strictly
+   * speaking, but ordering won't be guaranteed between sent received packets
+   * within different paths. That's still useful if the application seperate
+   * application objects per path.
+   */
+  unsigned int enable_multipath: 1;
+  /** Are we recovering from a network failure? */
+  unsigned int failover_recovering : 1;
+  /** nbr of FAILOVER_END that we remain to see */
+  int nbr_remaining_failover_end;
+  /* tells ptls_send on which con we expect to send encrypted bytes*/
+  connect_info_t *sending_con;
+  /* tells ptls_send on which stream we send encrypted bytes */
+  tcpls_stream_t *sending_stream;
   /** carry a list of tcpls_option_t */
   list_t *tcpls_options;
   /** Should contain all streams */
@@ -218,14 +296,15 @@ struct st_tcpls_t {
   uint32_t next_transport_id;
   /** count the number of times we attached a stream from the peer*/
   uint32_t nbr_of_peer_streams_attached;
-  
   /** nbr of tcp connection */
   uint32_t nbr_tcp_streams;
-
   /** socket of the primary address - must be update at each primary change*/
   int socket_primary;
-  /** remember on which socket we pulled out bytes */
-  int socket_rcv;
+  /** remember on which connection we are pulling bytes */
+  int transportid_rcv;
+  /** remember on which stream we are decrypting -- useful to send back a
+   * DATA_ACK with the right stream*/
+  streamid_t streamid_rcv;
   /** the very initial socket used for the handshake */
   int initial_socket;
   /**
@@ -278,20 +357,30 @@ int tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbyte
  */
 int tcpls_receive(ptls_t *tls, ptls_buffer_t *input, struct timeval *tv);
 
-int ptls_set_user_timeout(ptls_t *ctx, uint16_t value, uint16_t sec_or_min,
-    uint8_t setlocal, uint8_t settopeer);
+int tcpls_set_user_timeout(tcpls_t *tcpls, int transportid, uint16_t value,
+    uint16_t msec_or_sec, uint8_t setlocal, uint8_t settopeer);
 
 int ptls_set_failover(ptls_t *ptls, char *address);
 
 int ptls_set_bpf_scheduler(ptls_t *ptls, const uint8_t *bpf_prog_bytecode,
     size_t bytecodelen, int setlocal, int settopeer);
 
-int ptls_send_tcpoption(ptls_t *tls, ptls_buffer_t *sendbuf, tcpls_enum_t type);
+int tcpls_send_tcpoption(tcpls_t *tcpls, int transportid, tcpls_enum_t type, int sendnow);
 
 void tcpls_free(tcpls_t *tcpls);
 
 /*============================================================================*/
 /** Internal to picotls */
+
+int get_tcpls_header_size(tcpls_t *tcpls, uint8_t type, tcpls_enum_t message);
+
+connect_info_t *connection_get(tcpls_t *tcpls, uint32_t transportid);
+
+int is_varlen(tcpls_enum_t message);
+
+int is_handshake_tcpls_message(tcpls_enum_t message);
+
+int is_failover_valid_message(uint8_t type, tcpls_enum_t message);
 
 int handle_tcpls_control(ptls_t *ctx, tcpls_enum_t type,
     const uint8_t *input, size_t len);

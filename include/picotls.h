@@ -158,6 +158,7 @@ extern "C" {
 #define PTLS_ALERT_CERTIFICATE_REQUIRED 116
 #define PTLS_ALERT_NO_APPLICATION_PROTOCOL 120
 #define PTLS_ALERT_TCPLS_RECORD 130
+#define PTLS_ALERT_BAD_MPJOIN 140
 
   /* internal errors */
 #define PTLS_ERROR_NO_MEMORY (PTLS_ERROR_CLASS_INTERNAL + 1)
@@ -240,7 +241,8 @@ extern "C" {
 
   /** Server to client encrypted extension  */
 #define PTLS_EXTENSION_TYPE_ENCRYPTED_TCP_OPTIONS 100
-  /** Define TCP extensions to be used as TLS extensions during the handshake */
+  /** Define TCP extensions to be used as TLS extensions during the handshake 
+   * Using values over 64 won't oblige us to pass the allowed extension madness*/
 #define PTLS_EXTENSION_TYPE_ENCRYPTED_TCP_OPTIONS_USERTIMEOUT 101
 #define PTLS_EXTENSION_TYPE_ENCRYPTED_MULTIHOMING_v4 102
 #define PTLS_EXTENSION_TYPE_ENCRYPTED_MULTIHOMING_v6 103
@@ -837,7 +839,12 @@ typedef struct st_ptls_log_event_t {
     /**
      * A callback used when a connection event occurs
      */
-    int (*connection_event_cb)(tcpls_event_t event, int socket, int transportid, void *cb_data);
+    int (*connection_event_cb)(tcpls_t *tcpls, tcpls_event_t event, int socket, int transportid, void *cb_data);
+    /**
+     * A callback used when a new address is received or an existing address is
+     * removed by the peer
+     */
+    int (*address_event_cb)(tcpls_t *tcpls, tcpls_event_t event, struct sockaddr *addr);
     /**
      * Optional data to be passed to the callback functions
      */
@@ -962,7 +969,7 @@ typedef struct st_ptls_log_event_t {
     /**
      * A callback used when a mpjoin is received
      */
-    int (*received_mpjoin_to_process)(int socket, uint8_t *connid, uint8_t *cookie, uint32_t transportid, void *cb_data);
+    int (*received_mpjoin_to_process)(tcpls_t *tcpls, int socket, uint8_t *connid, uint8_t *cookie, uint32_t transportid, void *cb_data);
     /**
      * TCPLS handshake socket
      */
@@ -1537,7 +1544,7 @@ int ptls_receive(ptls_t *tls, ptls_buffer_t *plaintextbuf, ptls_buffer_t *stream
 /**
  * encrypts given buffer into multiple TLS records
  */
-int ptls_send(ptls_t *tls, ptls_buffer_t *sendbuf, const void *input, size_t inlen);
+int ptls_send(ptls_t *tls, streamid_t streamid, ptls_buffer_t *sendbuf, const void *input, size_t inlen);
 
 
 /**
@@ -1654,8 +1661,8 @@ static size_t ptls_aead_encrypt_final(ptls_aead_context_t *ctx, void *output);
  * decrypts an AEAD record
  * @return number of bytes emitted to output if successful, or SIZE_MAX if the input is invalid (e.g. broken MAC)
  */
-static size_t ptls_aead_decrypt(ptls_aead_context_t *ctx, void *output, const void *input, size_t inlen, uint64_t seq,
-                                const void *aad, size_t aadlen);
+static size_t ptls_aead_decrypt(ptls_aead_context_t *ctx, void *output, const
+    void *input, size_t inlen, uint64_t seq, const void *aad, size_t aadlen);
 
 
 int buffer_encrypt_record(ptls_t *tls, ptls_buffer_t *buf, size_t rec_start, ptls_aead_context_t *aead);
@@ -1666,8 +1673,9 @@ int buffer_encrypt_record(ptls_t *tls, ptls_buffer_t *buf, size_t rec_start, ptl
         ptls_buffer_push_block((buf), 2, block);                                                                                   \
     } while (0)
 
-int buffer_push_encrypted_records(ptls_t *tls, ptls_buffer_t *buf, uint8_t type, const uint8_t *src, size_t len,
-                                         ptls_aead_context_t *aead);
+int buffer_push_encrypted_records(ptls_t *tls, streamid_t streamid, ptls_buffer_t *buf, uint8_t type,
+    tcpls_enum_t tcpls_message, const uint8_t *src, size_t len,
+    ptls_aead_context_t *aead);
 
 int update_send_key(ptls_t *tls, ptls_buffer_t *_sendbuf, int request_update);
 /**

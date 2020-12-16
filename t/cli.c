@@ -31,6 +31,7 @@
 #include <getopt.h>
 #include <inttypes.h>
 #include <netinet/tcp.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
 #include <strings.h>
@@ -71,6 +72,7 @@ static void shift_buffer(ptls_buffer_t *buf, size_t delta)
 typedef enum integration_test_t {
   T_NOTEST,
   T_MULTIPATH,
+  T_SIMPLE_TRANSFER,
   T_SIMPLE_HANDSHAKE,
   T_ZERO_RTT_HANDSHAKE
 } integration_test_t;
@@ -86,20 +88,30 @@ struct tcpls_options {
 };
 
 struct conn_to_tcpls {
+  int state;
   int conn_fd;
   int transportid;
   unsigned int is_primary : 1;
   streamid_t streamid;
   unsigned int wants_to_write : 1;
   tcpls_t *tcpls;
+  unsigned int to_remove : 1;
 };
 
 struct cli_data {
   list_t *socklist;
   list_t *streamlist;
+  list_t *socktoremove;
 };
 
 static struct tcpls_options tcpls_options;
+
+
+static void sig_handler(int signo) {
+  if (signo == SIGPIPE) {
+    fprintf(stderr, "Catching a SIGPIPE error\n");
+  }
+}
 
 static struct timeval timediff(struct timeval *t_current, struct timeval *t_init) {
   struct timeval diff;
@@ -113,8 +125,26 @@ static struct timeval timediff(struct timeval *t_current, struct timeval *t_init
   }
   return diff;
 }
+
+static int handle_address_event(tcpls_t *tcpls, tcpls_event_t event, struct sockaddr *addr) {
+  switch (event) {
+    case ADDED_ADDR:
+      fprintf(stderr, "Added address\n");
+      return 0;
+    case ADD_ADDR:
+      if (addr->sa_family == AF_INET) {
+        tcpls_add_v4(tcpls->tls, (struct sockaddr_in*) addr, 0, 0, 0);
+      }
+      else
+        tcpls_add_v6(tcpls->tls, (struct sockaddr_in6*) addr, 0, 0, 0);
+    case REMOVE_ADDR:
+    default:
+      return -1;
+  }
+}
+
 /** Simplistic joining procedure for testing */
-static int handle_mpjoin(int socket, uint8_t *connid, uint8_t *cookie, uint32_t
+static int handle_mpjoin(tcpls_t *tcpls, int socket, uint8_t *connid, uint8_t *cookie, uint32_t
     transportid, void *cbdata) {
   printf("Wooh, we're handling a mpjoin\n");
   list_t *conntcpls = (list_t*) cbdata;
@@ -125,13 +155,16 @@ static int handle_mpjoin(int socket, uint8_t *connid, uint8_t *cookie, uint32_t
     if (!memcmp(ctcpls->tcpls->connid, connid, CONNID_LEN)) {
       for (int j = 0; j < conntcpls->size; j++) {
         ctcpls2 = list_get(conntcpls, j);
-        if (ctcpls2->conn_fd == socket) {
-          /*if (ctcpls2->tcpls)*/
-            /*tcpls_free(ctcpls2->tcpls);*/
+        if (ctcpls2->tcpls == tcpls) {
+          tcpls_free(ctcpls2->tcpls);
           ctcpls2->tcpls = ctcpls->tcpls;
         }
       }
-      return tcpls_accept(ctcpls->tcpls, socket, cookie, transportid);
+      int ret = tcpls_accept(ctcpls->tcpls, socket, cookie, transportid);
+      if (ctcpls->tcpls->enable_failover && ctcpls->tcpls->tls->is_server && ret >= 0) {
+        tcpls_send_tcpoption(ctcpls->tcpls, ret, USER_TIMEOUT, 1);
+      }
+      return 0;
     }
   }
   return -1;
@@ -141,12 +174,20 @@ static int handle_client_stream_event(tcpls_t *tcpls, tcpls_event_t event, strea
     int transportid, void *cbdata) {
   struct cli_data *data = (struct cli_data*) cbdata;
   switch (event) {
-    case STREAM_OPENED:
-      fprintf(stderr, "Handling stream_opened callback\n");
+    case STREAM_NETWORK_RECOVERED:
+      fprintf(stderr, "Handling STREAM_NETWORK_RECOVERED callback\n");
       list_add(data->streamlist, &streamid);
       break;
+    case STREAM_OPENED:
+      fprintf(stderr, "Handling STREAM_OPENED callback\n");
+      list_add(data->streamlist, &streamid);
+      break;
+    case STREAM_NETWORK_FAILURE:
+      fprintf(stderr, "Handling STREAM_NETWORK_FAILURE callback, removing stream %u\n", streamid);
+      list_remove(data->streamlist, &streamid);
+      break;
     case STREAM_CLOSED:
-      fprintf(stderr, "Handling stream_closed callback, removing stream %u\n", streamid);
+      fprintf(stderr, "Handling STREAM_CLOSED callback, removing stream %u\n", streamid);
       list_remove(data->streamlist, &streamid);
       break;
     default: break;
@@ -159,7 +200,11 @@ static int handle_stream_event(tcpls_t *tcpls, tcpls_event_t event,
   struct conn_to_tcpls *conn_tcpls;
   switch (event) {
     case STREAM_OPENED:
-      fprintf(stderr, "Handling stream_opened callback\n");
+    case STREAM_NETWORK_RECOVERED:
+      if (event == STREAM_OPENED)
+        fprintf(stderr, "Handling STREAM_OPENED callback\n");
+      else
+        fprintf(stderr, "Handling STREAM_NETWORK_RECOVERED callback\n");
       for (int i = 0; i < conn_tcpls_l->size; i++) {
         conn_tcpls = list_get(conn_tcpls_l, i);
         if (conn_tcpls->tcpls == tcpls && conn_tcpls->transportid == transportid) {
@@ -172,10 +217,14 @@ static int handle_stream_event(tcpls_t *tcpls, tcpls_event_t event,
       break;
       /** currently assumes 2 streams */
     case STREAM_CLOSED:
-      fprintf(stderr, "Handling stream_closed callback\n");
+    case STREAM_NETWORK_FAILURE:
+      if (event == STREAM_CLOSED)
+        fprintf(stderr, "Handling STREAM_CLOSED callback\n");
+      else
+        fprintf(stderr, "Handling STREAM_NETWORK_FAILURE callback\n");
       for (int i = 0; i < conn_tcpls_l->size; i++) {
         conn_tcpls = list_get(conn_tcpls_l, i);
-        if (conn_tcpls->transportid == transportid) {
+        if (tcpls == conn_tcpls->tcpls && conn_tcpls->transportid == transportid) {
           fprintf(stderr, "Woh! we're stopping to write on the connection linked to transportid %d\n", transportid);
           conn_tcpls->wants_to_write = 0;
           conn_tcpls->is_primary = 0;
@@ -186,12 +235,16 @@ static int handle_stream_event(tcpls_t *tcpls, tcpls_event_t event,
   return 0;
 }
 
-static int handle_client_connection_event(tcpls_event_t event, int socket, int transportid, void *cbdata) {
+static int handle_client_connection_event(tcpls_t *tcpls, tcpls_event_t event,
+    int socket, int transportid, void *cbdata) {
   struct cli_data *data = (struct cli_data*) cbdata;
   switch (event) {
+    case CONN_FAILED:
+      fprintf(stderr, "Received a CONN_FAILED on socket %d\n", socket);
+      break;
     case CONN_CLOSED:
-      fprintf(stderr, "Received a CONN_CLOSED; removing the socket %d\n", socket);
-      list_remove(data->socklist, &socket);
+      fprintf(stderr, "Received a CONN_CLOSED; marking socket %d to remove\n", socket);
+      list_add(data->socktoremove, &socket);
       break;
     case CONN_OPENED:
       fprintf(stderr, "Received a CONN_OPENED; adding the socket %d\n", socket);
@@ -202,17 +255,32 @@ static int handle_client_connection_event(tcpls_event_t event, int socket, int t
   return 0;
 }
 
-static int handle_connection_event(tcpls_event_t event, int socket, int transportid, void *cbdata) {
+static int handle_connection_event(tcpls_t *tcpls, tcpls_event_t event, int
+    socket, int transportid, void *cbdata) {
   list_t *conntcpls = (list_t*) cbdata;
   switch (event) {
-    case CONN_OPENED:
+    case CONN_FAILED:
       {
-        fprintf(stderr, "Received a CONN_OPENED; adding the socket\n");
+        fprintf(stderr, "Received a CONN_FAILED on socket %d\n", socket);
         struct conn_to_tcpls *ctcpls;
         for (int i = 0; i < conntcpls->size; i++) {
           ctcpls = list_get(conntcpls, i);
-          if (ctcpls->conn_fd == socket) {
+          if (ctcpls->tcpls == tcpls && ctcpls->conn_fd == socket && ctcpls->transportid == transportid) {
+            ctcpls->state = FAILED;
+            break;
+          }
+        }
+      }
+      break;
+    case CONN_OPENED:
+      {
+        fprintf(stderr, "Received a CONN_OPENED; adding transportid %d to the socket %d\n", transportid, socket);
+        struct conn_to_tcpls *ctcpls;
+        for (int i = 0; i < conntcpls->size; i++) {
+          ctcpls = list_get(conntcpls, i);
+          if (ctcpls->tcpls == tcpls && ctcpls->conn_fd == socket) {
             ctcpls->transportid = transportid;
+            ctcpls->state = CONNECTED;
             break;
           }
         }
@@ -220,13 +288,14 @@ static int handle_connection_event(tcpls_event_t event, int socket, int transpor
       break;
     case CONN_CLOSED:
       {
-        fprintf(stderr, "Received a CONN_CLOSED; removing the socket\n");
+        fprintf(stderr, "Received a CONN_CLOSED; removing the connection linked to  socket %d\n", socket);
         struct conn_to_tcpls *ctcpls;
         for (int i = 0; i < conntcpls->size; i++) {
           ctcpls = list_get(conntcpls, i);
-          if (ctcpls->conn_fd == socket) {
-            list_remove(conntcpls, ctcpls);
-            break;
+          if (ctcpls->tcpls == tcpls && ctcpls->conn_fd == socket && ctcpls->transportid == transportid) {
+            ctcpls->to_remove = 1;
+            ctcpls->conn_fd = 0;
+            ctcpls->state = CLOSED;
           }
         }
       }
@@ -260,7 +329,7 @@ static void tcpls_add_ips(tcpls_t *tcpls, struct sockaddr_storage *sa_our,
       tcpls_add_v6(tcpls->tls, (struct sockaddr_in6*)&sa_peer[i], 0, 0, 0);
   }
 }
-static int handle_tcpls_read(tcpls_t *tcpls, int socket) {
+static int handle_tcpls_read(tcpls_t *tcpls, int socket, ptls_buffer_t *buf) {
 
   int ret;
   if (!ptls_handshake_is_complete(tcpls->tls) && tcpls->tls->state <
@@ -269,6 +338,9 @@ static int handle_tcpls_read(tcpls_t *tcpls, int socket) {
     memset(&prop, 0, sizeof(prop));
     prop.received_mpjoin_to_process = &handle_mpjoin;
     prop.socket = socket;
+    if (tcpls->enable_failover && tcpls->tls->is_server) {
+      tcpls_set_user_timeout(tcpls, 0, 250, 0, 1, 1);
+    }
     if ((ret = tcpls_handshake(tcpls->tls, &prop)) != 0) {
       if (ret == PTLS_ERROR_HANDSHAKE_IS_MPJOIN) {
         return ret;
@@ -277,28 +349,27 @@ static int handle_tcpls_read(tcpls_t *tcpls, int socket) {
     }
     return 0;
   }
-  ptls_buffer_t buf;
-  ptls_buffer_init(&buf, "", 0);
   struct timeval timeout;
   memset(&timeout, 0, sizeof(timeout));
-  while ((ret = tcpls_receive(tcpls->tls, &buf, &timeout)) == TCPLS_HOLD_DATA_TO_READ)
+  int init_size = buf->off;
+  while ((ret = tcpls_receive(tcpls->tls, buf, &timeout)) == TCPLS_HOLD_DATA_TO_READ)
     ;
   if (ret < 0) {
     fprintf(stderr, "tcpls_receive returned %d\n",ret);
   }
-  ret = buf.off;
-  ptls_buffer_dispose(&buf);
+  ret = buf->off-init_size;
   return ret;
 }
 
-static int handle_tcpls_write(tcpls_t *tcpls, struct conn_to_tcpls *conntotcpls,  int inputfd) {
+static int handle_tcpls_write(tcpls_t *tcpls, struct conn_to_tcpls *conntotcpls,  int *inputfd) {
   static const size_t block_size = 8192;
   uint8_t buf[block_size];
   int ret, ioret;
-  while ((ioret = read(inputfd, buf, block_size)) == -1 && errno == EINTR)
-    ;
+  if (*inputfd > 0)
+    while ((ioret = read(*inputfd, buf, block_size)) == -1 && errno == EINTR)
+      ;
   if (ioret > 0) {
-    if((ret = tcpls_send(tcpls->tls, conntotcpls->streamid, buf, ioret)) < 0) {
+    if((ret = tcpls_send(tcpls->tls, conntotcpls->streamid, buf, ioret)) != 0) {
       fprintf(stderr, "tcpls_send returned %d for sending on streamid %u\n",
           ret, conntotcpls->streamid);
       /*close(inputfd);*/
@@ -313,9 +384,9 @@ static int handle_tcpls_write(tcpls_t *tcpls, struct conn_to_tcpls *conntotcpls,
     fprintf(stderr, "End-of-file, closing the connection linked to stream id\
         %u\n", conntotcpls->streamid);
     conntotcpls->wants_to_write = 0;
-    return -2;
-    close(inputfd);
-    inputfd = -1;
+    tcpls_stream_close(tcpls->tls, conntotcpls->streamid, 1);
+    close(*inputfd);
+    *inputfd = -1;
   }
   else {
     perror("read failed");
@@ -327,35 +398,45 @@ static int handle_tcpls_write(tcpls_t *tcpls, struct conn_to_tcpls *conntotcpls,
 
 static int handle_server_zero_rtt_test(list_t *conn_tcpls, fd_set *readset) {
   int ret = 1;
+  ptls_buffer_t recvbuf;
+  ptls_buffer_init(&recvbuf, "", 0);
   for (int i = 0; i < conn_tcpls->size; i++) {
     struct conn_to_tcpls *conn = list_get(conn_tcpls, i);
-    if (FD_ISSET(conn->conn_fd, readset)) {
-      ret = handle_tcpls_read(conn->tcpls, conn->conn_fd);
-      if (ptls_handshake_is_complete(conn->tcpls->tls))
+    if (FD_ISSET(conn->conn_fd, readset) && conn->state >= CONNECTED) {
+      ret = handle_tcpls_read(conn->tcpls, conn->conn_fd, &recvbuf);
+      if (ptls_handshake_is_complete(conn->tcpls->tls)){
+        ptls_buffer_dispose(&recvbuf);
         return 0;
+      }
       break;
     }
   }
+  ptls_buffer_dispose(&recvbuf);
   return ret;
 }
 
-static int handle_server_multipath_test(list_t *conn_tcpls, int inputfd, fd_set
+static int handle_server_multipath_test(list_t *conn_tcpls, int *inputfd, fd_set
     *readset, fd_set *writeset) {
   /** Now Read data for all tcpls_t * that wants to read */
   int ret = 1;
+  ptls_buffer_t recvbuf;
+  ptls_buffer_init(&recvbuf, "", 0);
   for (int i = 0; i < conn_tcpls->size; i++) {
     struct conn_to_tcpls *conn = list_get(conn_tcpls, i);
-    if (FD_ISSET(conn->conn_fd, readset)) {
-      ret = handle_tcpls_read(conn->tcpls, conn->conn_fd);
-      if (ptls_handshake_is_complete(conn->tcpls->tls) && conn->is_primary)
+    if (FD_ISSET(conn->conn_fd, readset) && conn->state >= CONNECTED) {
+      ret = handle_tcpls_read(conn->tcpls, conn->conn_fd, &recvbuf);
+      if (ptls_handshake_is_complete(conn->tcpls->tls) && conn->is_primary && *inputfd > 0)
         conn->wants_to_write = 1;
       break;
     }
   }
+  ptls_buffer_dispose(&recvbuf);
   /** Write data for all tcpls_t * that wants to write :-) */
   for (int i = 0; i < conn_tcpls->size; i++) {
     struct conn_to_tcpls *conn = list_get(conn_tcpls, i);
-    if (FD_ISSET(conn->conn_fd, writeset)) {
+    /** it is possible that wants_to_write gets updated by the reading bytes
+     * juste before */
+    if (FD_ISSET(conn->conn_fd, writeset) && conn->wants_to_write) {
       /** Figure out the stream to send data */
       ret = handle_tcpls_write(conn->tcpls, conn, inputfd);
     }
@@ -363,10 +444,19 @@ static int handle_server_multipath_test(list_t *conn_tcpls, int inputfd, fd_set
   return ret;
 }
 
-static int handle_client_multipath_test(tcpls_t *tcpls, struct cli_data *data) {
+
+
+static int handle_client_transfer_test(tcpls_t *tcpls, int is_multipath_test, struct cli_data *data) {
   /** handshake*/
-  if (handle_tcpls_read(tcpls, 0) < 0)
-    return -1;
+  int ret;
+  ptls_buffer_t recvbuf;
+  ptls_buffer_init(&recvbuf, "", 0);
+  FILE *mtest = fopen("multipath_test.data", "w");
+  assert(mtest);
+  if (handle_tcpls_read(tcpls, 0, &recvbuf) < 0) {
+    ret = -1;
+    goto Exit;
+  }
   printf("Handshake done\n");
   fd_set readfds, writefds, exceptfds;
   int has_migrated = 0;
@@ -376,12 +466,20 @@ static int handle_client_multipath_test(tcpls_t *tcpls, struct cli_data *data) {
   struct timeval timeout;
   ptls_handshake_properties_t prop = {NULL};
   while (1) {
+    /*cleanup*/
+    int *socket;
+    for (int i = 0; i < data->socktoremove->size; i++) {
+      socket = list_get(data->socktoremove, i);
+      list_remove(data->socklist, socket);
+    }
+    list_clean(data->socktoremove);
+    if (data->socklist->size == 0)
+      goto Exit;
     int maxfds = 0;
     do {
       FD_ZERO(&readfds);
       FD_ZERO(&writefds);
       FD_ZERO(&exceptfds);
-      int *socket;
       for (int i = 0; i < data->socklist->size; i++) {
         socket = list_get(data->socklist, i);
         FD_SET(*socket, &readfds);
@@ -393,11 +491,10 @@ static int handle_client_multipath_test(tcpls_t *tcpls, struct cli_data *data) {
     } while (select(maxfds+1, &readfds, &writefds, &exceptfds, &timeout) == -1);
 
     int ret;
-    int *socket;
     for (int i = 0; i < data->socklist->size; i++) {
       socket = list_get(data->socklist, i);
       if (FD_ISSET(*socket, &readfds)) {
-        if ((ret = handle_tcpls_read(tcpls, *socket)) < 0) {
+        if ((ret = handle_tcpls_read(tcpls, *socket, &recvbuf)) < 0) {
           fprintf(stderr, "handle_tcpls_read returned %d\n",ret);
           break;
         }
@@ -409,7 +506,11 @@ static int handle_client_multipath_test(tcpls_t *tcpls, struct cli_data *data) {
         break;
       }
     }
-    if (received_data >= 41457280  && !has_remigrated) {
+    /** consume received data */
+    fwrite(recvbuf.base, recvbuf.off, 1, mtest);
+    recvbuf.off = 0;
+
+    if (is_multipath_test && received_data >= 41457280  && !has_remigrated) {
       has_remigrated = 1;
       /*struct timeval timeout;*/
       /*timeout.tv_sec = 5;*/
@@ -427,21 +528,23 @@ static int handle_client_multipath_test(tcpls_t *tcpls, struct cli_data *data) {
       prop.client.mpjoin = 1;
       prop.client.zero_rtt = 1;
       prop.client.dest = (struct sockaddr_storage *) &tcpls->v4_addr_llist->addr;
-      int ret = tcpls_handshake(tcpls->tls, &prop);
+      ret = tcpls_handshake(tcpls->tls, &prop);
       if (!ret) {
-        tcpls_stream_new(tcpls->tls, NULL, (struct sockaddr*)
+        streamid_t streamid = tcpls_stream_new(tcpls->tls, NULL, (struct sockaddr*)
             &tcpls->v4_addr_llist->addr);
-        tcpls_streams_attach(tcpls->tls, 0, 1);
+       if (tcpls_streams_attach(tcpls->tls, 0, 1) < 0)
+         fprintf(stderr, "Failed to attach stream %u\n", streamid);
+       else
         /** closing the stream id 1 */
-        tcpls_stream_close(tcpls->tls, 1, 1);
+         tcpls_stream_close(tcpls->tls, 1, 1);
       }
       else {
         fprintf(stderr, "tcpls_handshake returned %d\n", ret);
-        return -1;
+        goto Exit;
       }
     }
     /** We test a migration */
-    if (received_data >= 21457280 && !has_migrated) {
+    if (is_multipath_test && received_data >= 21457280 && !has_migrated) {
       has_migrated = 1;
       int socket = 0;
       connect_info_t *con = NULL;
@@ -470,7 +573,11 @@ static int handle_client_multipath_test(tcpls_t *tcpls, struct cli_data *data) {
       }
     }
   }
-  return 0;
+  ret = 0;
+Exit:
+  fclose(mtest);
+  ptls_buffer_dispose(&recvbuf);
+  return ret;
 }
 
 static int handle_client_simple_handshake(tcpls_t *tcpls, struct cli_data *data) {
@@ -529,21 +636,27 @@ static int handle_client_connection(tcpls_t *tcpls, struct cli_data *data,
       else
         printf("TEST 0-RTT: FAILURE\n");
       break;
+    case T_SIMPLE_TRANSFER:
     case T_MULTIPATH:
       {
         struct timeval timeout;
         timeout.tv_sec = 5;
         timeout.tv_usec = 0;
+       
         int err = tcpls_connect(tcpls->tls, NULL, NULL, &timeout);
         if (err){
           fprintf(stderr, "tcpls_connect failed with err %d\n", err);
           return 1;
         }
-        ret = handle_client_multipath_test(tcpls, data);
-        if (!ret)
-          printf("TEST MULTIPATH: SUCCESS\n");
-        else
-          printf("TEST MULTIPATH: FAILURE\n");
+        if (test == T_MULTIPATH){
+          tcpls->enable_multipath = 1;
+          ret = handle_client_transfer_test(tcpls, 1, data);
+        }
+        else {
+          if (tcpls->enable_failover)
+            tcpls->enable_multipath = 1;
+          ret = handle_client_transfer_test(tcpls, 0, data);
+        }
       }
       break;
     case T_NOTEST:
@@ -706,14 +819,14 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
           send_amount = max_can_be_sent - early_bytes_sent;
         }
         if (send_amount != 0) {
-          if ((ret = ptls_send(tls, &encbuf, ptbuf.base, send_amount)) != 0) {
+          if ((ret = ptls_send(tls, 0, &encbuf, ptbuf.base, send_amount)) != 0) {
             fprintf(stderr, "ptls_send(early_data):%d\n", ret);
             goto Exit;
           }
           early_bytes_sent += send_amount;
         }
       } else {
-        if ((ret = ptls_send(tls, &encbuf, ptbuf.base, ptbuf.off)) != 0) {
+        if ((ret = ptls_send(tls, 0, &encbuf, ptbuf.base, ptbuf.off)) != 0) {
           fprintf(stderr, "ptls_send(1rtt):%d\n", ret);
           goto Exit;
         }
@@ -779,8 +892,10 @@ static int run_server(struct sockaddr_storage *sa_ours, struct sockaddr_storage
   int inputfd = 0;
   int listenfd[nbr_ours];
   list_t *conn_tcpls = new_list(sizeof(struct conn_to_tcpls), 2);
+  list_t *conn_to_remove = new_list(sizeof(struct conn_to_tcpls), 2);
   ctx->connection_event_cb = &handle_connection_event;
   ctx->stream_event_cb = &handle_stream_event;
+  ctx->address_event_cb = &handle_address_event;
   ctx->cb_data = conn_tcpls;
   socklen_t salen;
   struct timeval timeout;
@@ -831,7 +946,21 @@ static int run_server(struct sockaddr_storage *sa_ours, struct sockaddr_storage
 
   if (ctx->support_tcpls_options) {
     while (1) {
-      /*sleep(1);*/
+      struct conn_to_tcpls *conn;
+      /** do some cleanup of tcpls_l if some have to be removed */
+      for (int i = 0; i < conn_tcpls->size; i++) {
+          conn = list_get(conn_tcpls, i);
+          if (conn->to_remove) {
+            list_add(conn_to_remove, conn);
+          }
+      }
+      for (int i = 0; i < conn_to_remove->size; i++) {
+        list_remove(conn_tcpls, list_get(conn_to_remove, i));
+      }
+      list_clean(conn_to_remove);
+      if (inputfd && conn_tcpls->size == 0)
+        goto Exit;
+
       fd_set readset, writeset;
       int maxfd = 0;
       do {
@@ -847,12 +976,14 @@ static int run_server(struct sockaddr_storage *sa_ours, struct sockaddr_storage
         /** put all tcpls connections within the read set, and the write set if
          * they want to write */
         for (int i = 0; i < conn_tcpls->size; i++) {
-          struct conn_to_tcpls *conn = list_get(conn_tcpls, i);
-          FD_SET(conn->conn_fd, &readset);
-          if (conn->wants_to_write)
-            FD_SET(conn->conn_fd, &writeset);
-          if (maxfd < conn->conn_fd)
-            maxfd = conn->conn_fd;
+          conn = list_get(conn_tcpls, i);
+          if (conn->state == CONNECTED) {
+            FD_SET(conn->conn_fd , &readset);
+            if (conn->wants_to_write)
+              FD_SET(conn->conn_fd, &writeset);
+            if (maxfd < conn->conn_fd)
+              maxfd = conn->conn_fd;
+          }
         }
         /*fprintf(stderr, "waiting for connection or r/w event...\n");*/
       } while (select(maxfd+1, &readset, &writeset, NULL, &timeout) == -1);
@@ -870,11 +1001,14 @@ static int run_server(struct sockaddr_storage *sa_ours, struct sockaddr_storage
           else {
             fprintf(stderr, "Accepting a new connection\n");
             tcpls_t *new_tcpls = tcpls_new(ctx,  1);
+            new_tcpls->enable_failover = 1;
             struct conn_to_tcpls conntcpls;
             memset(&conntcpls, 0, sizeof(conntcpls));
             conntcpls.conn_fd = new_conn;
             conntcpls.wants_to_write = 0;
             conntcpls.tcpls = new_tcpls;
+            if (test == T_MULTIPATH || new_tcpls->enable_failover)
+              conntcpls.tcpls->enable_multipath =1;
             list_add(tcpls_l, new_tcpls);
             /** ADD our ips  -- This might worth to be ctx and instance-based?*/
             tcpls_add_ips(new_tcpls, sa_ours, NULL, nbr_ours, 0);
@@ -888,13 +1022,14 @@ static int run_server(struct sockaddr_storage *sa_ours, struct sockaddr_storage
       }
       int ret;
       switch (test) {
+        case T_SIMPLE_TRANSFER:
         case T_MULTIPATH:
           assert(input_file);
           if (!inputfd && (inputfd = open(input_file, O_RDONLY)) == -1) {
             fprintf(stderr, "failed to open file:%s:%s\n", input_file, strerror(errno));
             goto Exit;
           }
-          if ((ret = handle_server_multipath_test(conn_tcpls, inputfd,  &readset, &writeset)) < -1) {
+          if ((ret = handle_server_multipath_test(conn_tcpls, &inputfd,  &readset, &writeset)) < -1) {
             goto Exit;
           }
           break;
@@ -937,17 +1072,20 @@ static int run_client(struct sockaddr_storage *sa_our, struct sockaddr_storage
 
   hsprop->client.esni_keys = resolve_esni_keys(server_name);
   list_t *socklist = new_list(sizeof(int), 2);
+  list_t *socktoremove = new_list(sizeof(int), 2);
   list_t *streamlist = new_list(sizeof(tcpls_stream_t), 2);
   struct cli_data data = {NULL};
   data.socklist = socklist;
   data.streamlist = streamlist;
+  data.socktoremove = socktoremove;
   ctx->cb_data = &data;
   ctx->stream_event_cb = &handle_client_stream_event;
   ctx->connection_event_cb = &handle_client_connection_event;
   tcpls_t *tcpls = tcpls_new(ctx, 0);
   tcpls_add_ips(tcpls, sa_our, sa_peer, nbr_our, nbr_peer);
   ctx->output_decrypted_tcpls_data = 0;
-
+  tcpls->enable_failover = 1;
+  signal(SIGPIPE, sig_handler);
 
   if (ctx->support_tcpls_options) {
     int ret = handle_client_connection(tcpls, &data, test);
@@ -1002,6 +1140,10 @@ static void usage(const char *cmd)
       "  -h                   print this help\n"
       "  -t                   Use tcpls\n"
       "  -T intergration_test Precise which integration test is to be run\n"
+      "  -p v4_address        Peer's v4 IP address\n"
+      "  -P v6_address        Peer's v6 IP address\n"
+      "  -z v4_address        Our v4 IP address (not the default one) \n"
+      "  -Z v6_address        Our v6 IP address (not the default one) \n"
       "\n"
       "Supported named groups: secp256r1"
 #if PTLS_OPENSSL_HAVE_SECP384R1
@@ -1183,6 +1325,8 @@ int main(int argc, char **argv)
                   test = T_ZERO_RTT_HANDSHAKE;
                 else if (strcasecmp(optarg, "simple_handshake") == 0)
                   test = T_SIMPLE_HANDSHAKE;
+                else if (strcasecmp(optarg, "simple_transfer") == 0)
+                  test = T_SIMPLE_TRANSFER;
                 else {
                   fprintf(stderr, "Unknown integration test: %s\n", optarg);
                   exit(1);
