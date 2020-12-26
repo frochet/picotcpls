@@ -3,6 +3,7 @@ from ipmininet.ipnet import IPNet
 from ipmininet.cli import IPCLI
 from ipmininet.link import TCIntf
 from mininet.log import lg
+from ipmininet.router.config import OSPF, RouterConfig
 
 class MyTopology(IPTopo):
 
@@ -21,16 +22,12 @@ class MyTopology(IPTopo):
         r4 = self.addRouter("r4", use_v4=False)
         c = self.addHost("c")
         s = self.addHost("s")
-
-
         self.addLink(c, r1)
-        self.addLink(r1, r2, delay="10ms", bw=30)
-        self.addLink(r2, r3, delay="10ms", bw=30)
-        self.addLink(r1, r4, delay="20ms", bw=30)
-        self.addLink(r4, r3, delay="20ms", bw=30)
+        r1r2 = self.addLink(r1, r2, delay="10ms", bw=30)
+        r2r3 = self.addLink(r2, r3, delay="10ms", bw=30)
+        r1r4 = self.addLink(r1, r4, delay="20ms", bw=30)
+        r4r3 = self.addLink(r4, r3, delay="20ms", bw=30)
         self.addLink(r3, s)
-
-
         super().build(*args, **kwargs)
 
 lg.setLogLevel("info")
@@ -40,3 +37,4 @@ try:
     IPCLI(net)
 finally:
     net.stop()
+

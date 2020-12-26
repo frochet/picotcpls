@@ -1004,7 +1004,7 @@ static int run_server(struct sockaddr_storage *sa_ours, struct sockaddr_storage
           else {
             fprintf(stderr, "Accepting a new connection\n");
             tcpls_t *new_tcpls = tcpls_new(ctx,  1);
-            new_tcpls->enable_failover = 1;
+            new_tcpls->enable_failover = 0;
             struct conn_to_tcpls conntcpls;
             memset(&conntcpls, 0, sizeof(conntcpls));
             conntcpls.conn_fd = new_conn;
@@ -1087,7 +1087,7 @@ static int run_client(struct sockaddr_storage *sa_our, struct sockaddr_storage
   tcpls_t *tcpls = tcpls_new(ctx, 0);
   tcpls_add_ips(tcpls, sa_our, sa_peer, nbr_our, nbr_peer);
   ctx->output_decrypted_tcpls_data = 0;
-  tcpls->enable_failover = 1;
+  tcpls->enable_failover = 0;
   signal(SIGPIPE, sig_handler);
 
   if (ctx->support_tcpls_options) {

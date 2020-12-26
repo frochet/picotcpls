@@ -151,6 +151,9 @@ void *tcpls_new(void *ctx, int is_server) {
   tcpls->recvbuf = malloc(sizeof(*tcpls->recvbuf));
   tcpls->rec_reordering = malloc(sizeof(*tcpls->rec_reordering));
   tcpls->buffrag = malloc(sizeof(*tcpls->buffrag));
+  ptls_buffer_init(tcpls->buffrag, "", 0);
+  if (ptls_buffer_reserve(tcpls->buffrag, 5) != 0)
+    return NULL;
   tcpls->tls = tls;
   ptls_buffer_init(tcpls->sendbuf, "", 0);
   ptls_buffer_init(tcpls->recvbuf, "", 0);
@@ -545,6 +548,9 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
       coninfo.this_transportid = tcpls->next_transport_id++;
       coninfo.buffrag = malloc(sizeof(ptls_buffer_t));
       memset(coninfo.buffrag, 0, sizeof(ptls_buffer_t));
+      ptls_buffer_init(coninfo.buffrag, "", 0);
+      if (ptls_buffer_reserve(coninfo.buffrag, 5) != 0)
+        return -1;
       if (properties->client.dest->ss_family == AF_INET) {
         coninfo.dest = get_addr_from_sockaddr(tcpls->v4_addr_llist, (struct
               sockaddr_in *) properties->client.dest);
@@ -826,6 +832,9 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
       newconn.dest = peer_v4;
       newconn.buffrag = malloc(sizeof(ptls_buffer_t));
       memset(newconn.buffrag, 0, sizeof(ptls_buffer_t));
+      ptls_buffer_init(newconn.buffrag, "", 0);
+      if (ptls_buffer_reserve(newconn.buffrag, 5) != 0)
+        return PTLS_ERROR_NO_MEMORY;
 
     }
     else {
@@ -851,6 +860,9 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
       newconn.dest6 = peer_v6;
       newconn.buffrag = malloc(sizeof(ptls_buffer_t));
       memset(newconn.buffrag, 0, sizeof(ptls_buffer_t));
+      ptls_buffer_init(newconn.buffrag, "", 0);
+      if (ptls_buffer_reserve(newconn.buffrag, 5) != 0)
+        return PTLS_ERROR_NO_MEMORY;
     }
     else {
       assert(con->state == CLOSED);
@@ -985,6 +997,9 @@ streamid_t tcpls_stream_new(ptls_t *tls, struct sockaddr *src, struct sockaddr *
     coninfo.this_transportid = tcpls->next_transport_id++;
     coninfo.buffrag = malloc(sizeof(ptls_buffer_t));
     memset(coninfo.buffrag, 0, sizeof(ptls_buffer_t));
+    ptls_buffer_init(coninfo.buffrag, "", 0);
+    if (ptls_buffer_reserve(coninfo.buffrag, 5) != 0)
+      return -1;
     if (dest->sa_family == AF_INET) {
       /** NULL src means we use the default one */
       coninfo.src = src_addr;
@@ -2375,7 +2390,7 @@ int handle_tcpls_data_record(ptls_t *tls, struct st_ptls_record_t *rec)
   tcpls_stream_t *stream = stream_get(tcpls, tcpls->streamid_rcv);
   if (tcpls->failover_recovering) {
     /**
-     * We need to check whether we did not already receive this mpseq over the
+     * We need to check whether we did not already receive this seq over the
      * lost connection -- i.e., the sender can send data we received but not yet
      * acked
      **/
