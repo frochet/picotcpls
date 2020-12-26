@@ -409,6 +409,7 @@ int buffer_push_encrypted_records(ptls_t *tls, streamid_t streamid, ptls_buffer_
         //if(type == PTLS_CONTENT_TYPE_TCPLS_DATA)
          /*   tlog_transport_log(tls->tcpls, data_record_tx, mpseq,
   chunk_size, PTLS_CONTENT_TYPE_APPDATA, type, ctx->seq);*/
+        tlog_transport_log(tls->tcpls, (type == PTLS_CONTENT_TYPE_TCPLS_DATA)?data_record_tx:control_record_tx, mpseq, chunk_size, type, type, ctx->seq, streamid);
 #endif
         src += chunk_size;
         len -= chunk_size;
