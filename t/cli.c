@@ -245,6 +245,7 @@ static int handle_client_connection_event(tcpls_t *tcpls, tcpls_event_t event,
     case CONN_CLOSED:
       fprintf(stderr, "Received a CONN_CLOSED; marking socket %d to remove\n", socket);
       list_add(data->socktoremove, &socket);
+      tlog_close_log(tcpls);
       break;
     case CONN_OPENED:
       fprintf(stderr, "Received a CONN_OPENED; adding the socket %d\n", socket);
@@ -296,6 +297,7 @@ static int handle_connection_event(tcpls_t *tcpls, tcpls_event_t event, int
             ctcpls->to_remove = 1;
             ctcpls->conn_fd = 0;
             ctcpls->state = CLOSED;
+            tlog_close_log(tcpls);
           }
         }
       }
@@ -663,6 +665,7 @@ static int handle_client_connection(tcpls_t *tcpls, struct cli_data *data,
       printf("NO TEST");
       exit(1);
   }
+  fprintf(stderr, "End transter hahah\n");
   return 0;
 }
 
@@ -1177,6 +1180,7 @@ int main(int argc, char **argv)
   ptls_context_t ctx = {ptls_openssl_random_bytes, &ptls_get_time, key_exchanges, cipher_suites};
   ptls_handshake_properties_t hsprop = {{{{NULL}}}};
   const char *host, *port, *input_file = NULL, *esni_file = NULL;
+  const char *ebpf_program_path;
   integration_test_t test = T_NOTEST;
   struct {
     ptls_key_exchange_context_t *elements[16];
@@ -1192,7 +1196,7 @@ int main(int argc, char **argv)
   tcpls_options.peer_addrs6 = new_list(39*sizeof(char), 2);
   int family = 0;
 
-  while ((ch = getopt(argc, argv, "46abBC:c:i:Ik:nN:es:SE:K:l:y:vhtd:p:P:z:Z:T:")) != -1) {
+  while ((ch = getopt(argc, argv, "46abBC:c:i:Ik:nN:es:SE:K:l:y:vhtd:p:P:z:Z:T:f:")) != -1) {
     switch (ch) {
       case '4':
         family = AF_INET;
@@ -1222,6 +1226,10 @@ int main(int argc, char **argv)
         }
         load_certificate_chain(&ctx, optarg);
         is_server = ch == 'c';
+        break;
+      case 'f':
+        ebpf_program_path = optarg;
+        fprintf(stderr, "got f options %s\n", ebpf_program_path);
         break;
       case 'i':
         input_file = optarg;

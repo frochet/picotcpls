@@ -59,6 +59,7 @@
 #include <netinet/tcp.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <time.h>
 #include "picotypes.h"
 #include "containers.h"
 #include "picotls.h"
@@ -109,6 +110,15 @@ static int send_unacked_data(tcpls_t *tcpls, tcpls_stream_t *stream, connect_inf
 static int do_send(tcpls_t *tcpls, tcpls_stream_t *stream, connect_info_t *con);
 static int initiate_recovering(tcpls_t *tcpls, connect_info_t *con);
 static int try_decrypt_with_multistreams(tcpls_t *tcpls, const void *input, ptls_buffer_t *decryptbuf,  size_t *input_off, size_t input_size);
+
+#ifdef TCPLS_ENABLE_LOGGING
+static char *tlog_gettime(char *time_str);
+static int tlog_open_log_file(const char *vantagepoint);
+static size_t tlog_init_log(tcpls_t *tcpls);
+//static int tlog_close_log(tcpls_t *tcpls);
+static  double gettime_ms(void);
+static  double start_time;
+#endif
 
 /**
 * Create a new TCPLS object
@@ -2356,7 +2366,7 @@ int handle_tcpls_control(ptls_t *ptls, tcpls_enum_t type,
 int handle_tcpls_data_record(ptls_t *tls, struct st_ptls_record_t *rec)
 {
   tcpls_t *tcpls = tls->tcpls;
-  uint32_t mpseq;
+  uint32_t mpseq = 0;
   if (tcpls->enable_multipath) {
     mpseq = *(uint32_t *) &rec->fragment[rec->length-sizeof(mpseq)];
     rec->length -= sizeof(mpseq);
@@ -2374,6 +2384,7 @@ int handle_tcpls_data_record(ptls_t *tls, struct st_ptls_record_t *rec)
       return 1;
     }
   }
+  tlog_transport_log(tls->tcpls, data_record_rx, mpseq, rec->length, rec->type, rec->type, stream->aead_dec->seq, stream->streamid);
   int ret = 0;
   con->nbr_records_received++;
   con->nbr_bytes_received += rec->length;
@@ -2515,6 +2526,7 @@ int handle_tcpls_control_record(ptls_t *tls, struct st_ptls_record_t *rec)
       stream->last_seq_received = stream->aead_dec->seq-1;
       stream->nbr_records_since_last_ack++;
       stream->nbr_bytes_since_last_ack++;
+      tlog_transport_log(tls->tcpls, control_record_rx, mpseq, rec->length, rec->type, rec->type, stream->aead_dec->seq, stream->streamid);
       return ret;
     }
   }
@@ -2524,7 +2536,9 @@ int handle_tcpls_control_record(ptls_t *tls, struct st_ptls_record_t *rec)
     stream->last_seq_received = stream->aead_dec->seq-1;
     stream->nbr_records_since_last_ack++;
     stream->nbr_bytes_since_last_ack++;
+    tlog_transport_log(tls->tcpls, control_record_rx, mpseq, rec->length, rec->type, rec->type, stream->aead_dec->seq, stream->streamid);
   }
+  
   /** We assume that only Variable size options won't hold into 1 record */
   return handle_tcpls_control(tls, type, rec->fragment, rec->length);
 Exit:
@@ -3291,6 +3305,10 @@ static void connection_close(tcpls_t *tcpls, connect_info_t *con) {
 void tcpls_free(tcpls_t *tcpls) {
   if (!tcpls)
     return;
+#ifdef TCPLS_ENABLE_LOGGING
+  if(tcpls)
+    tlog_close_log(tcpls);
+#endif
   ptls_buffer_dispose(tcpls->sendbuf);
   ptls_buffer_dispose(tcpls->recvbuf);
   ptls_buffer_dispose(tcpls->rec_reordering);
@@ -3362,6 +3380,7 @@ static char *tlog_gettime(char *time_str){
 static int tlog_open_log_file(const char *vantagepoint){
   char *path = malloc(43*sizeof(char));
   char *date =  malloc(31*sizeof(char));
+  start_time = gettime_ms();
   date = tlog_gettime(date);
   *(date+31) = '\0';
   snprintf(path, 43, "/tmp/%s%s%s", date, vantagepoint, ".qlog");
@@ -3370,6 +3389,7 @@ static int tlog_open_log_file(const char *vantagepoint){
   if(fd < 0){
     fprintf(stderr, "opening file (%d) (%d) (%s)", fd, errno, path);
   }
+  
   return fd;
 }
 
@@ -3379,50 +3399,51 @@ static size_t tlog_init_log(tcpls_t *tcpls){
   fd = tlog_open_log_file(vantage_point);
   tcpls->log_file = fd;  
   size_t writen_bytes = 0;
-  writen_bytes = dprintf(tcpls->log_file, "{\n"
-                    "  \"qlog_version\": \"draft-01\",\n"
-                    "  \"title\": \"first tlog file\",\n"
-                    "  \"description\": \"Description for this group of traces (long)\",\n"
-                    "  \"summary\": {\n"
-                    "  },\n"
-                    "  \"traces\": [\n"
-                    "   {\n"
-                    "     \"vantage_point\":{\"type\":\" %s \" },\n"
-                    "     \"configuration \" : {\"time_units\" : \"us\"},\n"
-                    "     \"common_fields\" : { \n"
-                    "        \"group_id\": \"%d\",\n"
-                    "        \"protocol_type\": \"TCPLS\" \n"
-                    "     },\n"
-                    "     \"events_fields\" : [\"delta_time\", \"category\", \"event\", \"trigger\", \"data\"],\n"
-                    "     \"events\":[", tcpls->tls->is_server?"server":"client", *tcpls->connid);
+  writen_bytes = dprintf(tcpls->log_file, "{"
+                    "  \"qlog_version\": \"draft-01\","
+                    "  \"traces\": ["
+                    "   {"
+                    "     \"common_fields\" : { "
+                    "        \"reference_time\": \"%.6f\"},"
+                    "        \"configuration\": {\"time_units\": \"ms\" },"
+                    "     \"event_fields\" : [\"relative_time\", \"category\", \"event_type\", \"data\"],\n"
+                    "     \"events\":[", start_time/1000 );
   return writen_bytes;
 }
 
-static int tlog_close_log(tcpls_t *tcpls){
+int tlog_close_log(tcpls_t *tcpls){
   size_t writen_bytes = 0;
-  writen_bytes = dprintf(tcpls->log_file, "]}]}");
+  writen_bytes = dprintf(tcpls->log_file, "], \"vantage_point\": {\"name\": \"tcpls\", \"type\": \"%s\"}}]}", tcpls->tls->is_server?"server":"client");
   close(tcpls->log_file);
   return writen_bytes;
 }
 
 int tlog_transport_log(tcpls_t *tcpls, const tlog_record_evt evt, uint32_t mpseq,
-  size_t record_size, uint8_t type, uint8_t ttype, uint32_t seq){
+  size_t record_size, uint8_t type, uint8_t ttype, uint32_t seq, streamid_t streamid){
   static int start = 0;
   static const char * const evt_str[] = {
-    [data_record_tx] = "data_record_sent",
-    [data_record_rx] = "data_record_received",
-    [control_record_tx] = "control_record_sent",
-    [control_record_rx] = "control_record_received"
+    [data_record_tx] = "packet_sent",
+    [data_record_rx] = "packet_received",
+    [control_record_tx] = "packet_sent",
+    [control_record_rx] = "packet_received"
   };
+  double delta_time = (gettime_ms() - start_time)/1000;
   start ? dprintf(tcpls->log_file,
-            ",\"transport\",\"%s\",{\"record_type\":\"%u\",\"header\":{"
-            "\"record_size\":\"%lu\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_seq\" : \"%u\" ",
-            evt_str[evt], type, record_size, mpseq, ttype,seq) : dprintf(tcpls->log_file,
-            "\"transport\",\"%s\",{\"record_type\":\"%u\",\"header\":{"
-            "\"record_size\":\"%lu\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_seq\" : \"%u\" ",
-            evt_str[evt], type, record_size, mpseq, ttype,seq);
-  dprintf(tcpls->log_file, "}") ;
+            ",[\"%.6f\", \"transport\",\"%s\",{\"packet_type\":\"%s\",\"header\":{"
+            "\"packet_number\" : \"%u\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_size\":\"%lu\" }, \"frames\": [{\"frame_type\":\"stream\",\"id\": \"%u\"}]}", delta_time,
+            evt_str[evt], (type==PTLS_CONTENT_TYPE_TCPLS_DATA)?"data_record":"control_record", seq, mpseq, ttype, record_size, streamid) : dprintf(tcpls->log_file,
+            "[\"%.6f\", \"transport\",\"%s\",{\"packet_type\":\"%s\",\"header\":{"
+            "\"packet_number\" : \"%u\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_size\":\"%lu\" }, \"frames\": [{\"frame_type\":\"stream\",\"id\": \"%u\"}]}", delta_time,
+            evt_str[evt], (type==PTLS_CONTENT_TYPE_TCPLS_DATA)?"data_record":"control_record", seq, mpseq, ttype, record_size, streamid);
+  dprintf(tcpls->log_file, "]") ;
   start = 1;
   return 0;
 }
+
+static double gettime_ms(void){
+  struct timeval tv1;
+  gettimeofday(&tv1, NULL);
+  return (tv1.tv_sec * 1000000 + tv1.tv_usec);
+}
+
 #endif
