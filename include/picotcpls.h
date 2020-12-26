@@ -399,5 +399,6 @@ typedef enum {
 } tlog_record_evt ;
 
 int tlog_transport_log(tcpls_t *tcpls, const tlog_record_evt evt, uint32_t mpseq,
-  size_t record_size, uint8_t type, uint8_t ttype, uint32_t seq);
+  size_t record_size, uint8_t type, uint8_t ttype, uint32_t seq, streamid_t streamid);
+int tlog_close_log(tcpls_t *tcpls);
 #endif
