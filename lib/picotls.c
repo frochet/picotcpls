@@ -208,8 +208,10 @@ void ptls_buffer__release_memory(ptls_buffer_t *buf)
 
 int ptls_buffer_reserve(ptls_buffer_t *buf, size_t delta)
 {
-    if (buf->base == NULL)
+    if (buf->base == NULL){
+        fprintf(stderr, "NO_MEMORY (1)\n");
         return PTLS_ERROR_NO_MEMORY;
+    }
 
     if (PTLS_MEMORY_DEBUG || buf->capacity < buf->off + delta) {
         uint8_t *newp;
@@ -219,8 +221,10 @@ int ptls_buffer_reserve(ptls_buffer_t *buf, size_t delta)
         while (new_capacity < buf->off + delta) {
             new_capacity *= 2;
         }
-        if ((newp = malloc(new_capacity)) == NULL)
+        if ((newp = malloc(new_capacity)) == NULL){
+            fprintf(stderr, "NO_MEMORY (2)\n");
             return PTLS_ERROR_NO_MEMORY;
+        }
         memcpy(newp, buf->base, buf->off);
         ptls_buffer__release_memory(buf);
         buf->base = newp;
@@ -409,7 +413,7 @@ int buffer_push_encrypted_records(ptls_t *tls, streamid_t streamid, ptls_buffer_
         //if(type == PTLS_CONTENT_TYPE_TCPLS_DATA)
          /*   tlog_transport_log(tls->tcpls, data_record_tx, mpseq,
   chunk_size, PTLS_CONTENT_TYPE_APPDATA, type, ctx->seq);*/
-        tlog_transport_log(tls->tcpls, (type == PTLS_CONTENT_TYPE_TCPLS_DATA)?data_record_tx:control_record_tx, mpseq, chunk_size, type, type, ctx->seq, streamid);
+        tlog_transport_log(tls->tcpls, (type == PTLS_CONTENT_TYPE_TCPLS_DATA)?data_record_tx:control_record_tx, mpseq, chunk_size, type, tcpls_message, ctx->seq, streamid);
 #endif
         src += chunk_size;
         len -= chunk_size;

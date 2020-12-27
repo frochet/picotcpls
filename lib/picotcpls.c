@@ -1372,7 +1372,7 @@ int tcpls_send_tcpoption(tcpls_t *tcpls, int transportid, tcpls_enum_t type, int
   ptls_t *tls = tcpls->tls;
   if(tls->traffic_protection.enc.aead == NULL)
     return -1;
-
+  
   /** Get the option */
   tcpls_options_t *option;
   int found = 0;
@@ -1383,6 +1383,7 @@ int tcpls_send_tcpoption(tcpls_t *tcpls, int transportid, tcpls_enum_t type, int
       break;
     }
   }
+  
   if (!found)
     return -1;
   tcpls_stream_t *stream;
@@ -1392,6 +1393,7 @@ int tcpls_send_tcpoption(tcpls_t *tcpls, int transportid, tcpls_enum_t type, int
      if (stream->transportid == transportid && stream->stream_usable)
        found = 1;
   }
+  
   //Use default sendbuf;
   ptls_buffer_t *buf;
   ptls_aead_context_t *ctx_to_use;
@@ -1406,6 +1408,7 @@ int tcpls_send_tcpoption(tcpls_t *tcpls, int transportid, tcpls_enum_t type, int
     buf = stream->sendbuf;
     ctx_to_use = stream->aead_enc;
   }
+  
   if (option->is_varlen) {
     if (!stream) {
       return -1;
@@ -2399,7 +2402,7 @@ int handle_tcpls_data_record(ptls_t *tls, struct st_ptls_record_t *rec)
       return 1;
     }
   }
-  tlog_transport_log(tls->tcpls, data_record_rx, mpseq, rec->length, rec->type, rec->type, stream->aead_dec->seq, stream->streamid);
+  tlog_transport_log(tls->tcpls, data_record_rx, mpseq, rec->length, rec->type, NONE, stream->aead_dec->seq, stream->streamid);
   int ret = 0;
   con->nbr_records_received++;
   con->nbr_bytes_received += rec->length;
@@ -2500,6 +2503,7 @@ int handle_tcpls_control_record(ptls_t *tls, struct st_ptls_record_t *rec)
         }
         return ret;
       }
+      tlog_transport_log(tls->tcpls, control_record_rx, mpseq, rec->length, rec->type, type, stream->aead_dec->seq, stream->streamid);
       return PTLS_ALERT_ILLEGAL_PARAMETER;
     }
     else {
@@ -2525,6 +2529,15 @@ int handle_tcpls_control_record(ptls_t *tls, struct st_ptls_record_t *rec)
       //XXX TODO, add a verification of this invariant
       /** We should already have parsed a CONTROL_VARLEN_BEGIN record*/
       /** always reserve memory (won't if enough left) */
+      
+       if (!tls->tcpls_buf->base) {
+          if ((init_buf = malloc(rec->length)) == NULL) {
+            ret = PTLS_ERROR_NO_MEMORY;
+            goto Exit;
+          }
+          ptls_buffer_init(tls->tcpls_buf, init_buf, rec->length);
+      }
+      
       if ((ret = ptls_buffer_reserve(tls->tcpls_buf, rec->length)) != 0)
         goto Exit;
       memcpy(tls->tcpls_buf->base+tls->tcpls_buf->off, rec->fragment, rec->length);
@@ -2541,7 +2554,7 @@ int handle_tcpls_control_record(ptls_t *tls, struct st_ptls_record_t *rec)
       stream->last_seq_received = stream->aead_dec->seq-1;
       stream->nbr_records_since_last_ack++;
       stream->nbr_bytes_since_last_ack++;
-      tlog_transport_log(tls->tcpls, control_record_rx, mpseq, rec->length, rec->type, rec->type, stream->aead_dec->seq, stream->streamid);
+      tlog_transport_log(tls->tcpls, control_record_rx, mpseq, rec->length, rec->type, type, stream->aead_dec->seq, stream->streamid);
       return ret;
     }
   }
@@ -2551,9 +2564,10 @@ int handle_tcpls_control_record(ptls_t *tls, struct st_ptls_record_t *rec)
     stream->last_seq_received = stream->aead_dec->seq-1;
     stream->nbr_records_since_last_ack++;
     stream->nbr_bytes_since_last_ack++;
-    tlog_transport_log(tls->tcpls, control_record_rx, mpseq, rec->length, rec->type, rec->type, stream->aead_dec->seq, stream->streamid);
+    tlog_transport_log(tls->tcpls, control_record_rx, mpseq, rec->length, rec->type, type, stream->aead_dec->seq, stream->streamid);
   }
-  
+  if((!con || !stream) && (type == STREAM_ATTACH))
+    tlog_transport_log(tls->tcpls, control_record_rx, 0, rec->length, rec->type, type, 1, 0);
   /** We assume that only Variable size options won't hold into 1 record */
   return handle_tcpls_control(tls, type, rec->fragment, rec->length);
 Exit:
@@ -2571,6 +2585,7 @@ static int setlocal_usertimeout(int socket, uint32_t val) {
 
 
 static int setlocal_bpf_cc(ptls_t *ptls, const uint8_t *prog, size_t proglen) {
+  fprintf(stderr,"calling setlocal_bpf_cc");
   return 0;
 }
 
@@ -3442,14 +3457,33 @@ int tlog_transport_log(tcpls_t *tcpls, const tlog_record_evt evt, uint32_t mpseq
     [control_record_tx] = "packet_sent",
     [control_record_rx] = "packet_received"
   };
+  
+  static const char * const ttype_str[] = {
+    [NONE] = "NONE",
+    [CONTROL_VARLEN_BEGIN] = "CONTROL_VARLEN_BEGIN",
+    [BPF_CC] = "BPF_CC",
+    [CONNID] = "CONNID",
+    [COOKIE] = "COOKIE",
+    [DATA_ACK] = "DATA_ACK",
+    [FAILOVER] = "FAILOVER",
+    [FAILOVER_END] = "FAILOVER_END",
+    [MPJOIN] = "MPJOIN",
+    [MULTIHOMING_v6] = "MULTIHOMING_v6",
+    [MULTIHOMING_v4] = "MULTIHOMING_v4",
+    [USER_TIMEOUT] = "USER_TIMEOUT",
+    [STREAM_ATTACH] = "STREAM_ATTACH",
+    [STREAM_CLOSE] = "STREAM_CLOSE",
+    [STREAM_CLOSE_ACK] = "STREAM_CLOSE_ACK",
+    [TRANSPORT_NEW] = "TRANSPORT_NEW"
+  };
   double delta_time = (gettime_ms() - start_time)/1000;
   start ? dprintf(tcpls->log_file,
             ",[\"%.6f\", \"transport\",\"%s\",{\"packet_type\":\"%s\",\"header\":{"
-            "\"packet_number\" : \"%u\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_size\":\"%lu\" }, \"frames\": [{\"frame_type\":\"stream\",\"id\": \"%u\"}]}", delta_time,
-            evt_str[evt], (type==PTLS_CONTENT_TYPE_TCPLS_DATA)?"data_record":"control_record", seq, mpseq, ttype, record_size, streamid) : dprintf(tcpls->log_file,
+            "\"packet_number\" : \"%u\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_size\":\"%lu\" }, \"frames\": [{\"frame_type\":\"stream\",\"id\": \"%u\"}, {\"frame_type\":\"%s\", \"id\":\"%u\"}]}", delta_time,
+            evt_str[evt], (type==PTLS_CONTENT_TYPE_TCPLS_DATA)?"data_record":"control_record", seq, mpseq, ttype, record_size, streamid, ttype_str[ttype], ttype) : dprintf(tcpls->log_file,
             "[\"%.6f\", \"transport\",\"%s\",{\"packet_type\":\"%s\",\"header\":{"
-            "\"packet_number\" : \"%u\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_size\":\"%lu\" }, \"frames\": [{\"frame_type\":\"stream\",\"id\": \"%u\"}]}", delta_time,
-            evt_str[evt], (type==PTLS_CONTENT_TYPE_TCPLS_DATA)?"data_record":"control_record", seq, mpseq, ttype, record_size, streamid);
+            "\"packet_number\" : \"%u\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_size\":\"%lu\" }, \"frames\": [{\"frame_type\":\"stream\",\"id\": \"%u\"}, {\"frame_type\":\"%s\", \"id\":\"%u\"}]}", delta_time,
+            evt_str[evt], (type==PTLS_CONTENT_TYPE_TCPLS_DATA)?"data_record":"control_record", seq, mpseq, ttype, record_size, streamid, ttype_str[ttype], ttype);
   dprintf(tcpls->log_file, "]") ;
   start = 1;
   return 0;

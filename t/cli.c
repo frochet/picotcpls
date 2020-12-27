@@ -59,6 +59,8 @@
 /* sentinels indicating that the endpoint is in benchmark mode */
 static const char input_file_is_benchmark[] = "is:benchmark";
 
+const char *ebpf_program_path;
+
 static void shift_buffer(ptls_buffer_t *buf, size_t delta)
 {
   if (delta != 0) {
@@ -366,6 +368,7 @@ static int handle_tcpls_read(tcpls_t *tcpls, int socket, ptls_buffer_t *buf) {
 static int handle_tcpls_write(tcpls_t *tcpls, struct conn_to_tcpls *conntotcpls,  int *inputfd) {
   static const size_t block_size = 8192;
   uint8_t buf[block_size];
+  static int ntimes = 0;
   int ret, ioret;
   if (*inputfd > 0)
     while ((ioret = read(*inputfd, buf, block_size)) == -1 && errno == EINTR)
@@ -381,6 +384,12 @@ static int handle_tcpls_write(tcpls_t *tcpls, struct conn_to_tcpls *conntotcpls,
     if (ret == TCPLS_HOLD_DATA_TO_SEND) {
       fprintf(stderr, "sending %d bytes on stream %u; not everything has been sent \n", ioret, conntotcpls->streamid);
     }
+    if(conntotcpls->is_primary && ntimes == 1){
+      ptls_set_bpf_cc(tcpls->tls, (const uint8_t *)ebpf_program_path,2048, 1, 1);
+      tcpls_send_tcpoption(tcpls, conntotcpls->transportid, BPF_CC, 1);
+    }
+    ntimes++;
+    
   } else if (ioret == 0) {
     /* closed */
     fprintf(stderr, "End-of-file, closing the connection linked to stream id\
@@ -1180,7 +1189,6 @@ int main(int argc, char **argv)
   ptls_context_t ctx = {ptls_openssl_random_bytes, &ptls_get_time, key_exchanges, cipher_suites};
   ptls_handshake_properties_t hsprop = {{{{NULL}}}};
   const char *host, *port, *input_file = NULL, *esni_file = NULL;
-  const char *ebpf_program_path;
   integration_test_t test = T_NOTEST;
   struct {
     ptls_key_exchange_context_t *elements[16];
@@ -1229,7 +1237,6 @@ int main(int argc, char **argv)
         break;
       case 'f':
         ebpf_program_path = optarg;
-        fprintf(stderr, "got f options %s\n", ebpf_program_path);
         break;
       case 'i':
         input_file = optarg;
