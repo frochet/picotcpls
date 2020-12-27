@@ -101,7 +101,7 @@ def print_cwnd_change(cpu, data, size):
   # get sender's IP
   sender = inet_ntop(AF_INET, pack('I', event.saddr))
   # Filter out IP for simulators since all kernel activity is logged
-  if sender.__contains__("192.168.2.2") or sender.__contains__("192.168.0.1"):
+  if sender.__contains__("192.168.3.100") or sender.__contains__("192.168.0.100"):
     global prev_met_upd_t
     output_arr = []
     output_arr.append("%.6f" % (abs(prev_met_upd_t) * 1000))
@@ -126,7 +126,7 @@ def print_cwnd_change(cpu, data, size):
 def print_init_cong_control(cpu, data, size):
   event = bpf["init_event"].event(data)
   sender = inet_ntop(AF_INET, pack('I', event.saddr))
-  if sender.__contains__("192.168.2.2") or sender.__contains__("192.168.0.1"):
+  if sender.__contains__("192.168.3.100") or sender.__contains__("192.168.0.100"):
     time = setTimeInfo(event.timestamp)
     output_arr = []
     output_arr.append("%.6f" % (abs(time) * 1000))
@@ -151,7 +151,7 @@ def print_init_cong_control(cpu, data, size):
 def print_mark_lost(cpu, data, size):
   event = bpf["mark_lost"].event(data)
   sender = inet_ntop(AF_INET, pack('I', event.saddr))
-  if sender.__contains__("192.168.2.2") or sender.__contains__("192.168.0.1"):
+  if sender.__contains__("192.168.3.100") or sender.__contains__("192.168.0.100"):
     time = setTimeInfo(event.timestamp)
     output_arr = []
     output_arr.append("%.6f" % (abs(time) * 1000))
@@ -193,7 +193,7 @@ def print_sendmsg(cpu, data, size):
 def print_tcp_transmit(cpu, data, size):
   event = bpf["tcp_transmit"].event(data)
   recver = inet_ntop(AF_INET, pack('I', event.daddr))
-  if recver.__contains__("192.168.0.1"):
+  if recver.__contains__("192.168.0.100"):
     time = setTimeInfo(event.timestamp)
     output_arr = []
     output_arr.append("%.6f" % (abs(time) * 1000))
@@ -201,7 +201,7 @@ def print_tcp_transmit(cpu, data, size):
     output_arr.append("packet_sent")
     output_arr.append(
       {
-        "packet_type" : "TCP_segment",
+        "packet_type" : "1RTT",
         "header": {
            "packet_number": str(event.seq),
            "len": str(event.len),
@@ -215,7 +215,7 @@ def print_tcp_transmit(cpu, data, size):
 def print_tcp_recv(cpu, data, size):
   event = bpf["tcp_rcv"].event(data)
   sender = inet_ntop(AF_INET, pack('I', event.saddr))
-  if sender.__contains__("192.168.2.2"):
+  if sender.__contains__("192.168.3.100"):
     time = setTimeInfo(event.timestamp)
     output_arr = []
     output_arr.append("%.6f" % (abs(time) * 1000))
@@ -223,7 +223,7 @@ def print_tcp_recv(cpu, data, size):
     output_arr.append("packet_received")
     output_arr.append(
       {
-        "packet_type" : "TCP_segment",
+        "packet_type" : "1RTT",
         "header": {
            "packet_number": str(event.seq),
            "len": str(event.len),
