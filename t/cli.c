@@ -45,6 +45,10 @@
 #include <openssl/evp.h>
 #include <openssl/engine.h>
 #include <openssl/pem.h>
+
+#include <signal.h>
+
+
 #if PICOTLS_USE_BROTLI
 #include "brotli/decode.h"
 #endif
@@ -59,7 +63,8 @@
 /* sentinels indicating that the endpoint is in benchmark mode */
 static const char input_file_is_benchmark[] = "is:benchmark";
 
-const char *ebpf_program_path;
+char *ebpf_program_path = NULL;
+char *ebpf_program_name = NULL;
 
 static void shift_buffer(ptls_buffer_t *buf, size_t delta)
 {
@@ -113,6 +118,10 @@ static void sig_handler(int signo) {
   if (signo == SIGPIPE) {
     fprintf(stderr, "Catching a SIGPIPE error\n");
   }
+}
+
+void sigint_handler(int signo) {
+  fprintf(stderr, "got ctrl C\n");
 }
 
 static struct timeval timediff(struct timeval *t_current, struct timeval *t_init) {
@@ -247,7 +256,7 @@ static int handle_client_connection_event(tcpls_t *tcpls, tcpls_event_t event,
     case CONN_CLOSED:
       fprintf(stderr, "Received a CONN_CLOSED; marking socket %d to remove\n", socket);
       list_add(data->socktoremove, &socket);
-      tlog_close_log(tcpls);
+      qlog_close_log(0);
       break;
     case CONN_OPENED:
       fprintf(stderr, "Received a CONN_OPENED; adding the socket %d\n", socket);
@@ -299,13 +308,35 @@ static int handle_connection_event(tcpls_t *tcpls, tcpls_event_t event, int
             ctcpls->to_remove = 1;
             ctcpls->conn_fd = 0;
             ctcpls->state = CLOSED;
-            tlog_close_log(tcpls);
+            fprintf(stderr, "conn_size %d\n", conntcpls->size);
+            qlog_close_log(1);
           }
         }
       }
       break;
     default: break;
   }
+  return 0;
+}
+
+static int load_set_cc(tcpls_t *tcpls, char *ebpf_path, char *cc_name, int transportid, int streamid){
+  int name_sz = strlen(cc_name), ioret;
+  int fd = open(ebpf_path, O_RDONLY);
+  if(fd<0)
+    perror("Unable to open file");
+  lseek(fd, 0L, SEEK_END);
+  int f_sz = lseek(fd, 0L, SEEK_CUR);
+  lseek(fd, 0L, SEEK_SET);
+  uint8_t *bpf_cc_buff = malloc(4+name_sz+4+ 4 + 4 +f_sz);
+  memcpy(bpf_cc_buff, &name_sz, 4);
+  memcpy(bpf_cc_buff+4, cc_name, name_sz);
+  memcpy(bpf_cc_buff+4+name_sz, &f_sz, 4);
+  memcpy(bpf_cc_buff+4+name_sz+4, &transportid, 4);
+  memcpy(bpf_cc_buff+4+name_sz+4+4, &streamid, 4);
+  while ((ioret = read(fd, bpf_cc_buff+4+name_sz+4+4+4, f_sz)) == -1 && errno == EINTR)
+        ;
+  ptls_set_bpf_cc(tcpls->tls, (uint8_t *)bpf_cc_buff,4+name_sz+4+4+4+f_sz, 1, 1);
+  tcpls_send_tcpoption(tcpls, transportid, BPF_CC, 1);
   return 0;
 }
 
@@ -368,7 +399,6 @@ static int handle_tcpls_read(tcpls_t *tcpls, int socket, ptls_buffer_t *buf) {
 static int handle_tcpls_write(tcpls_t *tcpls, struct conn_to_tcpls *conntotcpls,  int *inputfd) {
   static const size_t block_size = 8192;
   uint8_t buf[block_size];
-  static int ntimes = 0;
   int ret, ioret;
   if (*inputfd > 0)
     while ((ioret = read(*inputfd, buf, block_size)) == -1 && errno == EINTR)
@@ -384,11 +414,6 @@ static int handle_tcpls_write(tcpls_t *tcpls, struct conn_to_tcpls *conntotcpls,
     if (ret == TCPLS_HOLD_DATA_TO_SEND) {
       fprintf(stderr, "sending %d bytes on stream %u; not everything has been sent \n", ioret, conntotcpls->streamid);
     }
-    if(conntotcpls->is_primary && ntimes == 1){
-      ptls_set_bpf_cc(tcpls->tls, (const uint8_t *)ebpf_program_path,2048, 1, 1);
-      tcpls_send_tcpoption(tcpls, conntotcpls->transportid, BPF_CC, 1);
-    }
-    ntimes++;
     
   } else if (ioret == 0) {
     /* closed */
@@ -513,6 +538,20 @@ static int handle_client_transfer_test(tcpls_t *tcpls, int is_multipath_test, st
         if (received_data / 1000000 > mB_received) {
           mB_received++;
           printf("Received %d MB\n",mB_received);
+          if(!(mB_received%60)){
+            static int count = 0;
+            if(ebpf_program_path && ebpf_program_name){
+              printf("Changing cc\n");
+              connect_info_t *con = NULL;
+              for (int i = 0; i < tcpls->connect_infos->size; i++) {
+              con = list_get(tcpls->connect_infos, i);
+              if (con->is_primary) 
+                break;
+              }
+              load_set_cc(tcpls, ebpf_program_path, ebpf_program_name, con->this_transportid, count%2);
+              count++;
+            }
+          }
         }
         break;
       }
@@ -693,6 +732,8 @@ static int handle_connection(int sockfd, ptls_context_t *ctx, const char *server
 
   uint64_t start_at = ctx->get_time->cb(ctx->get_time);
 
+  signal(SIGINT, sigint_handler);
+  
   ptls_buffer_init(&rbuf, "", 0);
   ptls_buffer_init(&encbuf, "", 0);
   ptls_buffer_init(&ptbuf, "", 0);
@@ -1013,6 +1054,7 @@ static int run_server(struct sockaddr_storage *sa_ours, struct sockaddr_storage
           else {
             fprintf(stderr, "Accepting a new connection\n");
             tcpls_t *new_tcpls = tcpls_new(ctx,  1);
+            new_tcpls->enable_qlog = 1;
             new_tcpls->enable_failover = 0;
             struct conn_to_tcpls conntcpls;
             memset(&conntcpls, 0, sizeof(conntcpls));
@@ -1094,6 +1136,7 @@ static int run_client(struct sockaddr_storage *sa_our, struct sockaddr_storage
   ctx->stream_event_cb = &handle_client_stream_event;
   ctx->connection_event_cb = &handle_client_connection_event;
   tcpls_t *tcpls = tcpls_new(ctx, 0);
+  tcpls->enable_qlog = 1;
   tcpls_add_ips(tcpls, sa_our, sa_peer, nbr_our, nbr_peer);
   ctx->output_decrypted_tcpls_data = 0;
   tcpls->enable_failover = 0;
@@ -1116,6 +1159,7 @@ static int run_client(struct sockaddr_storage *sa_our, struct sockaddr_storage
     int ret = handle_connection(fd, ctx, server_name, input_file, hsprop, request_key_update, keep_sender_open);
     free(hsprop->client.esni_keys.base);
     tcpls_free(tcpls);
+    fprintf(stderr, "end connection\n");
     return ret;
   }
 }
@@ -1204,7 +1248,7 @@ int main(int argc, char **argv)
   tcpls_options.peer_addrs6 = new_list(39*sizeof(char), 2);
   int family = 0;
 
-  while ((ch = getopt(argc, argv, "46abBC:c:i:Ik:nN:es:SE:K:l:y:vhtd:p:P:z:Z:T:f:")) != -1) {
+  while ((ch = getopt(argc, argv, "46abBC:c:i:Ik:nN:es:SE:K:l:y:vhtd:p:P:z:Z:T:g:j:")) != -1) {
     switch (ch) {
       case '4':
         family = AF_INET;
@@ -1235,8 +1279,11 @@ int main(int argc, char **argv)
         load_certificate_chain(&ctx, optarg);
         is_server = ch == 'c';
         break;
-      case 'f':
+      case 'g':
         ebpf_program_path = optarg;
+        break;
+      case 'j':
+        ebpf_program_name = optarg;
         break;
       case 'i':
         input_file = optarg;

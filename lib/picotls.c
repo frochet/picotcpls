@@ -409,12 +409,10 @@ int buffer_push_encrypted_records(ptls_t *tls, streamid_t streamid, ptls_buffer_
                 return PTLS_ERROR_NO_MEMORY;
             }
         });
-#ifdef TCPLS_ENABLE_LOGGING
-        //if(type == PTLS_CONTENT_TYPE_TCPLS_DATA)
-         /*   tlog_transport_log(tls->tcpls, data_record_tx, mpseq,
-  chunk_size, PTLS_CONTENT_TYPE_APPDATA, type, ctx->seq);*/
-        tlog_transport_log(tls->tcpls, (type == PTLS_CONTENT_TYPE_TCPLS_DATA)?data_record_tx:control_record_tx, mpseq, chunk_size, type, tcpls_message, ctx->seq, streamid);
-#endif
+        if(tls->tcpls && tls->tcpls->enable_qlog)
+          qlog_transport_log(tx, mpseq, chunk_size, (type==PTLS_CONTENT_TYPE_TCPLS_DATA)?data_record:control_record,
+              tcpls_message, ctx->seq, streamid);
+
         src += chunk_size;
         len -= chunk_size;
     }
@@ -1155,7 +1153,8 @@ static int send_finished(ptls_t *tls, ptls_message_emitter_t *emitter)
             goto Exit;
         emitter->buf->off += tls->key_schedule->hashes[0].algo->digest_size;
     });
-
+    if(tls->tcpls && tls->tcpls->enable_qlog)
+      qlog_handshake_log(tx, handshake_record, finished, finished_seq, emitter->buf->off);
 Exit:
     return ret;
 }
@@ -1666,6 +1665,7 @@ static int send_client_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptls_
     int ret, is_second_flight = tls->key_schedule != NULL,
              send_sni = tls->server_name != NULL && !ptls_server_name_is_ipaddr(tls->server_name);
     int is_mpjoin = properties && properties->client.mpjoin && !tls->is_server;
+    
     if (properties != NULL && !is_mpjoin) {
         /* try to use ESNI */
         if (!is_second_flight && send_sni && properties->client.esni_keys.base != NULL) {
@@ -1880,6 +1880,8 @@ static int send_client_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptls_
             }
         });
     });
+    if(tls->tcpls && tls->tcpls->enable_qlog)
+      qlog_handshake_log(tx, handshake_record, client_hello, client_hello_seq, emitter->buf->off);
 
     /* update the message hash, filling in the PSK binder HMAC if necessary */
     if (resumption_secret.base != NULL && !is_mpjoin) {
@@ -2124,7 +2126,10 @@ static int client_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
     struct st_ptls_server_hello_t sh;
     ptls_iovec_t ecdh_secret = {NULL};
     int ret;
-
+    
+    static int handle_server_hello = 0;   
+    fprintf(stderr, "handle server hello %d\n", handle_server_hello++);
+    
     if ((ret = decode_server_hello(tls, &sh, message.base + PTLS_HANDSHAKE_HEADER_SIZE, message.base + message.len)) != 0)
         goto Exit;
     if (!(sh.legacy_session_id.len == tls->client.legacy_session_id.len &&
@@ -2219,6 +2224,8 @@ static int client_handle_encrypted_extensions(ptls_t *tls, ptls_iovec_t message,
     int ret, skip_early_data = 1;
 
     unknown_extensions[0].type = UINT16_MAX;
+    if(tls->tcpls && tls->tcpls->enable_qlog)
+      qlog_encryptedextensions_init(rx);
     decode_extensions(src, end, PTLS_HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS, &type, {
         if (tls->ctx->on_extension != NULL && (ret =
               tls->ctx->on_extension->cb(tls->ctx->on_extension, tls,
@@ -2235,6 +2242,8 @@ static int client_handle_encrypted_extensions(ptls_t *tls, ptls_iovec_t message,
                 ret = PTLS_ALERT_ILLEGAL_PARAMETER;
                 goto Exit;
             }
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_encryptedextensions_addextension(rx, server_name);
             break;
         //TCPLS
         case PTLS_EXTENSION_TYPE_ENCRYPTED_TCP_OPTIONS_USERTIMEOUT:
@@ -2247,6 +2256,8 @@ static int client_handle_encrypted_extensions(ptls_t *tls, ptls_iovec_t message,
               ret = PTLS_ALERT_ILLEGAL_PARAMETER;
               goto Exit;
             }
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_encryptedextensions_addextension(rx, encrypted_tcp_options_usertimeout);
             break;
         case PTLS_EXTENSION_TYPE_ENCRYPTED_CONNID:
         case PTLS_EXTENSION_TYPE_ENCRYPTED_COOKIE:
@@ -2254,14 +2265,26 @@ static int client_handle_encrypted_extensions(ptls_t *tls, ptls_iovec_t message,
         case PTLS_EXTENSION_TYPE_ENCRYPTED_MULTIHOMING_v6:
             {
               tcpls_enum_t exttype;
-              if (type == PTLS_EXTENSION_TYPE_ENCRYPTED_MULTIHOMING_v6)
+              if (type == PTLS_EXTENSION_TYPE_ENCRYPTED_MULTIHOMING_v6){
+                if(tls->tcpls && tls->tcpls->enable_qlog)
+                  qlog_encryptedextensions_addextension(rx, encrypted_multihoming_v6);
                 exttype = MULTIHOMING_v6;
-              else if (type == PTLS_EXTENSION_TYPE_ENCRYPTED_MULTIHOMING_v4)
+              }
+              else if (type == PTLS_EXTENSION_TYPE_ENCRYPTED_MULTIHOMING_v4){
+                if(tls->tcpls && tls->tcpls->enable_qlog)
+                  qlog_encryptedextensions_addextension(rx, encrypted_multihoming_v4);
                 exttype = MULTIHOMING_v4;
-              else if (type == PTLS_EXTENSION_TYPE_ENCRYPTED_CONNID)
+              }
+              else if (type == PTLS_EXTENSION_TYPE_ENCRYPTED_CONNID){
+                if(tls->tcpls && tls->tcpls->enable_qlog)
+                  qlog_encryptedextensions_addextension(rx, encrypted_connid);
                 exttype = CONNID;
-              else if (type == PTLS_EXTENSION_TYPE_ENCRYPTED_COOKIE)
+              }
+              else if (type == PTLS_EXTENSION_TYPE_ENCRYPTED_COOKIE){
+                if(tls->tcpls && tls->tcpls->enable_qlog)
+                  qlog_encryptedextensions_addextension(rx, encrypted_cookie);
                 exttype = COOKIE;
+              }
               else {
                 ret = PTLS_ALERT_ILLEGAL_PARAMETER;
                 goto Exit;
@@ -2297,6 +2320,8 @@ static int client_handle_encrypted_extensions(ptls_t *tls, ptls_iovec_t message,
                 ret = PTLS_ERROR_ESNI_RETRY;
                 goto Exit;
             }
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_encryptedextensions_addextension(rx, encrypted_server_name);
             break;
         case PTLS_EXTENSION_TYPE_ALPN:
             ptls_decode_block(src, end, 2, {
@@ -2314,6 +2339,8 @@ static int client_handle_encrypted_extensions(ptls_t *tls, ptls_iovec_t message,
                     goto Exit;
                 }
             });
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_encryptedextensions_addextension(rx, alpn);
             break;
         case PTLS_EXTENSION_TYPE_EARLY_DATA:
             if (!tls->client.using_early_data) {
@@ -2322,13 +2349,16 @@ static int client_handle_encrypted_extensions(ptls_t *tls, ptls_iovec_t message,
             }
             skip_early_data = 0;
             break;
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_encryptedextensions_addextension(rx, early_data);
         default:
             handle_unknown_extension(tls, properties, type, src, end, unknown_extensions);
             break;
         }
         src = end;
     });
-
+    if(tls->tcpls && tls->tcpls->enable_qlog)
+      qlog_encryptedextensions_log(rx, handshake_record, encrypted_extensions, encrypted_extensions_seq, message.len);
     if (tls->esni != NULL) {
         if (esni_nonce == NULL || !ptls_mem_equal(esni_nonce, tls->esni->nonce, PTLS_ESNI_NONCE_SIZE)) {
             ret = PTLS_ALERT_ILLEGAL_PARAMETER;
@@ -2444,7 +2474,8 @@ static int default_emit_certificate_cb(ptls_emit_certificate_t *_self, ptls_t *t
                                                   ptls_iovec_init(NULL, 0))) != 0)
             goto Exit;
     });
-
+    if(tls->tcpls && tls->tcpls->enable_qlog)
+      qlog_handshake_log(tx, handshake_record, certificate, certificate_seq, emitter->buf->off);
     ret = 0;
 Exit:
     return ret;
@@ -3529,6 +3560,8 @@ static int server_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
         goto Exit;
     if (tls->ctx->require_dhe_on_psk)
         ch.psk.ke_modes &= ~(1u << PTLS_PSK_KE_MODE_PSK);
+    static int count_client_hello = 0;   
+    fprintf(stderr, "handle client hello %d\n", count_client_hello++);
 
     /* handle client_random, legacy_session_id, SNI, ESNI */
     if (!is_second_flight) {
@@ -3793,6 +3826,8 @@ static int server_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
                                   {});
                           }
                       });
+    if(tls->tcpls && tls->tcpls->enable_qlog)
+      qlog_handshake_log(tx, handshake_record, server_hello, server_hello_seq, emitter->buf->off);
     if ((ret = push_change_cipher_spec(tls, emitter)) != 0)
         goto Exit;
 
@@ -3814,6 +3849,8 @@ static int server_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
             tls->server.early_data_skipped_bytes = 0;
     }
     /* send EncryptedExtensions */
+    if(tls->tcpls && tls->tcpls->enable_qlog)
+      qlog_encryptedextensions_init(tx);
     ptls_push_message(tls, emitter, tls->key_schedule, PTLS_HANDSHAKE_TYPE_ENCRYPTED_EXTENSIONS, {
         ptls_buffer_t *sendbuf = emitter->buf;
         tcpls_options_t *option;
@@ -3821,6 +3858,8 @@ static int server_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
             if (tls->esni != NULL) {
                 /* the extension is sent even if the application does not handle server name, because otherwise the handshake
                  * would fail (FIXME ch.esni.nonce will be zero on HRR) */
+                if(tls->tcpls && tls->tcpls->enable_qlog)
+                  qlog_encryptedextensions_addextension(tx, encrypted_server_name);
                 buffer_push_extension(sendbuf, PTLS_EXTENSION_TYPE_ENCRYPTED_SERVER_NAME, {
                     uint8_t response_type = PTLS_ESNI_RESPONSE_TYPE_ACCEPT;
                     ptls_buffer_pushv(sendbuf, &response_type, 1);
@@ -3830,9 +3869,13 @@ static int server_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
             } else if (tls->server_name != NULL) {
                 /* In this event, the server SHALL include an extension of type "server_name" in the (extended) server hello.
                  * The "extension_data" field of this extension SHALL be empty. (RFC 6066 section 3) */
+                if(tls->tcpls && tls->tcpls->enable_qlog)
+                  qlog_encryptedextensions_addextension(tx, server_name);
                 buffer_push_extension(sendbuf, PTLS_EXTENSION_TYPE_SERVER_NAME, {});
             }
             if (tls->negotiated_protocol != NULL) {
+                if(tls->tcpls && tls->tcpls->enable_qlog)
+                  qlog_encryptedextensions_addextension(tx, alpn);
                 buffer_push_extension(sendbuf, PTLS_EXTENSION_TYPE_ALPN, {
                     ptls_buffer_push_block(sendbuf, 2, {
                         ptls_buffer_push_block(sendbuf, 1, {
@@ -3841,12 +3884,17 @@ static int server_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
                     });
                 });
             }
-            if (tls->pending_handshake_secret != NULL)
+            if (tls->pending_handshake_secret != NULL){
+                if(tls->tcpls && tls->tcpls->enable_qlog)
+                  qlog_encryptedextensions_addextension(tx, early_data);
                 buffer_push_extension(sendbuf, PTLS_EXTENSION_TYPE_EARLY_DATA, {});
+            }
             /** Push encrypted TCP options if we have some */
             // TCPLS
             if (tls->ctx->support_tcpls_options && tls->tcpls) {
               /** Push connid */
+              if(tls->tcpls && tls->tcpls->enable_qlog)
+                qlog_encryptedextensions_addextension(tx, encrypted_connid);
               buffer_push_extension(sendbuf, PTLS_EXTENSION_TYPE_ENCRYPTED_CONNID, {
                   ptls_buffer_push_block(sendbuf, 2, {
                       ptls_buffer_push_block(sendbuf, 1, {
@@ -3858,6 +3906,8 @@ static int server_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
               uint8_t *cookie;
               for (int i = 0; i < tls->tcpls->cookies->size; i++) {
                 cookie = list_get(tls->tcpls->cookies, i);
+                if(tls->tcpls && tls->tcpls->enable_qlog)
+                  qlog_encryptedextensions_addextension(tx, encrypted_cookie);
                 buffer_push_extension(sendbuf, PTLS_EXTENSION_TYPE_ENCRYPTED_COOKIE, {
                     ptls_buffer_push_block(sendbuf, 2, {
                         ptls_buffer_push_block(sendbuf, 1, {
@@ -3869,6 +3919,8 @@ static int server_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
               for (int i = 0; i < tls->tcpls->tcpls_options->size; i++) {
                 option = list_get(tls->tcpls->tcpls_options, i);
                 if (option->data->base && option->type == USER_TIMEOUT) {
+                  if(tls->tcpls && tls->tcpls->enable_qlog)
+                    qlog_encryptedextensions_addextension(tx, encrypted_tcp_options_usertimeout);
                   buffer_push_extension(sendbuf, PTLS_EXTENSION_TYPE_ENCRYPTED_TCP_OPTIONS_USERTIMEOUT, {
                     ptls_buffer_pushv(sendbuf, option->data->base,
                         option->data->len);
@@ -3876,6 +3928,8 @@ static int server_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
                 }
                 /** Push our others v4 and v6 */
                 else if (option->data->base && option->type == MULTIHOMING_v4) {
+                  if(tls->tcpls && tls->tcpls->enable_qlog)
+                    qlog_encryptedextensions_addextension(tx, encrypted_multihoming_v4);
                   buffer_push_extension(sendbuf, PTLS_EXTENSION_TYPE_ENCRYPTED_MULTIHOMING_v4, {
                       ptls_buffer_push_block(sendbuf, 2, {
                           ptls_buffer_push_block(sendbuf, 1, {
@@ -3885,6 +3939,8 @@ static int server_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
                   });
                 }
                 else if (option->data->base && option->type == MULTIHOMING_v6) {
+                  if(tls->tcpls && tls->tcpls->enable_qlog)
+                    qlog_encryptedextensions_addextension(tx, encrypted_multihoming_v6);
                   buffer_push_extension(sendbuf, PTLS_EXTENSION_TYPE_ENCRYPTED_MULTIHOMING_v6, {
                       ptls_buffer_push_block(sendbuf, 2, {
                           ptls_buffer_push_block(sendbuf, 1, {
@@ -3899,6 +3955,8 @@ static int server_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
                 goto Exit;
         });
     });
+    if(tls->tcpls && tls->tcpls->enable_qlog)
+      qlog_encryptedextensions_log(tx, handshake_record, encrypted_extensions, encrypted_extensions_seq, emitter->buf->off);
 
     if (mode == HANDSHAKE_MODE_FULL) {
         /* send certificate request if client authentication is activated */
@@ -3917,7 +3975,8 @@ static int server_handle_hello(ptls_t *tls, ptls_message_emitter_t *emitter, ptl
                     });
                 });
             });
-
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(tx, handshake_record, certificate_request, certificate_request_seq, emitter->buf->off);
             if (ret != 0) {
                 goto Exit;
             }
@@ -4331,6 +4390,8 @@ static int handle_client_handshake_message(ptls_t *tls, ptls_message_emitter_t *
     case PTLS_STATE_CLIENT_EXPECT_SERVER_HELLO:
     case PTLS_STATE_CLIENT_EXPECT_SECOND_SERVER_HELLO:
         if (type == PTLS_HANDSHAKE_TYPE_SERVER_HELLO && is_end_of_record) {
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, server_hello, server_hello_seq, message.len);
             ret = client_handle_hello(tls, emitter, message, properties);
         } else {
             ret = PTLS_ALERT_UNEXPECTED_MESSAGE;
@@ -4345,6 +4406,8 @@ static int handle_client_handshake_message(ptls_t *tls, ptls_message_emitter_t *
         break;
     case PTLS_STATE_CLIENT_EXPECT_CERTIFICATE_REQUEST_OR_CERTIFICATE:
         if (type == PTLS_HANDSHAKE_TYPE_CERTIFICATE_REQUEST) {
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, certificate_request, certificate_request_seq, message.len);
             ret = client_handle_certificate_request(tls, message, properties);
             break;
         }
@@ -4352,9 +4415,13 @@ static int handle_client_handshake_message(ptls_t *tls, ptls_message_emitter_t *
     case PTLS_STATE_CLIENT_EXPECT_CERTIFICATE:
         switch (type) {
         case PTLS_HANDSHAKE_TYPE_CERTIFICATE:
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, certificate, certificate_seq, message.len);
             ret = client_handle_certificate(tls, message);
             break;
         case PTLS_HANDSHAKE_TYPE_COMPRESSED_CERTIFICATE:
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, compressed_certificate, compressed_certificate_seq, message.len);
             ret = client_handle_compressed_certificate(tls, message);
             break;
         default:
@@ -4364,6 +4431,8 @@ static int handle_client_handshake_message(ptls_t *tls, ptls_message_emitter_t *
         break;
     case PTLS_STATE_CLIENT_EXPECT_CERTIFICATE_VERIFY:
         if (type == PTLS_HANDSHAKE_TYPE_CERTIFICATE_VERIFY) {
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, certificate_verify, certificate_verify_seq, message.len);
             ret = client_handle_certificate_verify(tls, message);
         } else {
             ret = PTLS_ALERT_UNEXPECTED_MESSAGE;
@@ -4371,6 +4440,8 @@ static int handle_client_handshake_message(ptls_t *tls, ptls_message_emitter_t *
         break;
     case PTLS_STATE_CLIENT_EXPECT_FINISHED:
         if (type == PTLS_HANDSHAKE_TYPE_FINISHED && is_end_of_record) {
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, finished, finished_seq, message.len);
             ret = client_handle_finished(tls, emitter, message);
         } else {
             ret = PTLS_ALERT_UNEXPECTED_MESSAGE;
@@ -4379,9 +4450,13 @@ static int handle_client_handshake_message(ptls_t *tls, ptls_message_emitter_t *
     case PTLS_STATE_CLIENT_POST_HANDSHAKE:
         switch (type) {
         case PTLS_HANDSHAKE_TYPE_NEW_SESSION_TICKET:
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, new_session_ticket, new_session_ticket_seq, message.len);
             ret = client_handle_new_session_ticket(tls, message);
             break;
         case PTLS_HANDSHAKE_TYPE_KEY_UPDATE:
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, key_update, key_update_seq, message.len);
             ret = handle_key_update(tls, emitter, message);
             break;
         default:
@@ -4411,6 +4486,8 @@ static int handle_server_handshake_message(ptls_t *tls, ptls_message_emitter_t *
     case PTLS_STATE_SERVER_EXPECT_CLIENT_HELLO:
     case PTLS_STATE_SERVER_EXPECT_SECOND_CLIENT_HELLO:
         if (type == PTLS_HANDSHAKE_TYPE_CLIENT_HELLO && is_end_of_record) {
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, client_hello, client_hello_seq, message.len);
             ret = server_handle_hello(tls, emitter, message, properties);
         } else {
             ret = PTLS_ALERT_HANDSHAKE_FAILURE;
@@ -4418,6 +4495,8 @@ static int handle_server_handshake_message(ptls_t *tls, ptls_message_emitter_t *
         break;
     case PTLS_STATE_SERVER_EXPECT_CERTIFICATE:
         if (type == PTLS_HANDSHAKE_TYPE_CERTIFICATE) {
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, certificate, certificate_seq, message.len);
             ret = server_handle_certificate(tls, message);
         } else {
             ret = PTLS_ALERT_UNEXPECTED_MESSAGE;
@@ -4425,6 +4504,8 @@ static int handle_server_handshake_message(ptls_t *tls, ptls_message_emitter_t *
         break;
     case PTLS_STATE_SERVER_EXPECT_CERTIFICATE_VERIFY:
         if (type == PTLS_HANDSHAKE_TYPE_CERTIFICATE_VERIFY) {
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, certificate_verify, certificate_verify_seq, message.len);
             ret = server_handle_certificate_verify(tls, message);
         } else {
             ret = PTLS_ALERT_UNEXPECTED_MESSAGE;
@@ -4433,6 +4514,8 @@ static int handle_server_handshake_message(ptls_t *tls, ptls_message_emitter_t *
     case PTLS_STATE_SERVER_EXPECT_END_OF_EARLY_DATA:
         assert(!tls->ctx->omit_end_of_early_data);
         if (type == PTLS_HANDSHAKE_TYPE_END_OF_EARLY_DATA) {
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, end_of_early_data, end_of_early_data_seq, message.len);
             ret = server_handle_end_of_early_data(tls, message);
         } else {
             ret = PTLS_ALERT_UNEXPECTED_MESSAGE;
@@ -4440,6 +4523,8 @@ static int handle_server_handshake_message(ptls_t *tls, ptls_message_emitter_t *
         break;
     case PTLS_STATE_SERVER_EXPECT_FINISHED:
         if (type == PTLS_HANDSHAKE_TYPE_FINISHED && is_end_of_record) {
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, finished, finished_seq, message.len);
             ret = server_handle_finished(tls, message);
         } else {
             ret = PTLS_ALERT_HANDSHAKE_FAILURE;
@@ -4448,6 +4533,8 @@ static int handle_server_handshake_message(ptls_t *tls, ptls_message_emitter_t *
     case PTLS_STATE_SERVER_POST_HANDSHAKE:
         switch (type) {
         case PTLS_HANDSHAKE_TYPE_KEY_UPDATE:
+            if(tls->tcpls && tls->tcpls->enable_qlog)
+              qlog_handshake_log(rx, handshake_record, key_update, key_update_seq, message.len);
             ret = handle_key_update(tls, emitter, message);
             break;
         default:
@@ -4498,7 +4585,7 @@ static int handle_handshake_record(ptls_t *tls,
     /* handshake */
     if (rec->type != PTLS_CONTENT_TYPE_HANDSHAKE)
         return PTLS_ALERT_DECODE_ERROR;
-
+        
     /* flatten the unhandled messages */
     const uint8_t *src, *src_end;
     if (tls->recvbuf.mess.base == NULL) {

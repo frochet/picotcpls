@@ -112,12 +112,7 @@ static int initiate_recovering(tcpls_t *tcpls, connect_info_t *con);
 static int try_decrypt_with_multistreams(tcpls_t *tcpls, const void *input, ptls_buffer_t *decryptbuf,  size_t *input_off, size_t input_size);
 
 #ifdef TCPLS_ENABLE_LOGGING
-static char *tlog_gettime(char *time_str);
-static int tlog_open_log_file(const char *vantagepoint);
-static size_t tlog_init_log(tcpls_t *tcpls);
-//static int tlog_close_log(tcpls_t *tcpls);
-static  double gettime_ms(void);
-static  double start_time;
+
 #endif
 
 /**
@@ -167,7 +162,7 @@ void *tcpls_new(void *ctx, int is_server) {
   tcpls->connect_infos = new_list(sizeof(connect_info_t), 2);
   tls->tcpls = tcpls;
 #ifdef TCPLS_ENABLE_LOGGING
-  tlog_init_log(tcpls);
+  qlog_init_log(tcpls->tls->is_server);
 #endif
   return tcpls;
 }
@@ -1586,6 +1581,7 @@ static int do_send(tcpls_t *tcpls, tcpls_stream_t *stream, connect_info_t *con) 
   if (ret < 0) {
     if ((errno == ECONNRESET || errno == EPIPE || errno == ETIMEDOUT) && tcpls->enable_failover) {
       if (tcpls->tls->is_server) {
+        fprintf(stderr, "server failover start\n");
         if (tcpls->tls->ctx->stream_event_cb) {
           tcpls_stream_t *stream_failed;
           for (int i = 0; i < tcpls->streams->size; i++) {
@@ -1605,6 +1601,7 @@ static int do_send(tcpls_t *tcpls, tcpls_stream_t *stream, connect_info_t *con) 
       }
       else {
         /* we're a client -- let's try to reconnect */
+        fprintf(stderr, "server failover start\n");
         ret = initiate_recovering(tcpls, con);
       }
     }
@@ -2402,7 +2399,8 @@ int handle_tcpls_data_record(ptls_t *tls, struct st_ptls_record_t *rec)
       return 1;
     }
   }
-  tlog_transport_log(tls->tcpls, data_record_rx, mpseq, rec->length, rec->type, NONE, stream->aead_dec->seq, stream->streamid);
+  if(tls->tcpls->enable_qlog)
+    qlog_transport_log(rx, mpseq, rec->length, data_record, NONE, stream->aead_dec->seq, stream->streamid);
   int ret = 0;
   con->nbr_records_received++;
   con->nbr_bytes_received += rec->length;
@@ -2503,7 +2501,8 @@ int handle_tcpls_control_record(ptls_t *tls, struct st_ptls_record_t *rec)
         }
         return ret;
       }
-      tlog_transport_log(tls->tcpls, control_record_rx, mpseq, rec->length, rec->type, type, stream->aead_dec->seq, stream->streamid);
+      if(tls->tcpls->enable_qlog)
+        qlog_transport_log(rx, mpseq, rec->length, control_record, type, stream->aead_dec->seq, stream->streamid);
       return PTLS_ALERT_ILLEGAL_PARAMETER;
     }
     else {
@@ -2554,7 +2553,8 @@ int handle_tcpls_control_record(ptls_t *tls, struct st_ptls_record_t *rec)
       stream->last_seq_received = stream->aead_dec->seq-1;
       stream->nbr_records_since_last_ack++;
       stream->nbr_bytes_since_last_ack++;
-      tlog_transport_log(tls->tcpls, control_record_rx, mpseq, rec->length, rec->type, type, stream->aead_dec->seq, stream->streamid);
+      if(tls->tcpls->enable_qlog)
+        qlog_transport_log(rx, mpseq, rec->length, control_record, type, stream->aead_dec->seq, stream->streamid);
       return ret;
     }
   }
@@ -2564,10 +2564,13 @@ int handle_tcpls_control_record(ptls_t *tls, struct st_ptls_record_t *rec)
     stream->last_seq_received = stream->aead_dec->seq-1;
     stream->nbr_records_since_last_ack++;
     stream->nbr_bytes_since_last_ack++;
-    tlog_transport_log(tls->tcpls, control_record_rx, mpseq, rec->length, rec->type, type, stream->aead_dec->seq, stream->streamid);
+    if(tls->tcpls->enable_qlog)
+      qlog_transport_log(rx, mpseq, rec->length, control_record, type, stream->aead_dec->seq, stream->streamid);
   }
-  if((!con || !stream) && (type == STREAM_ATTACH))
-    tlog_transport_log(tls->tcpls, control_record_rx, 0, rec->length, rec->type, type, 1, 0);
+  if(tls->tcpls->enable_qlog){
+    if((!con || !stream) && (type == STREAM_ATTACH))
+      qlog_transport_log(rx, 0, rec->length, control_record, type, 1, 0);
+  }
   /** We assume that only Variable size options won't hold into 1 record */
   return handle_tcpls_control(tls, type, rec->fragment, rec->length);
 Exit:
@@ -2585,7 +2588,48 @@ static int setlocal_usertimeout(int socket, uint32_t val) {
 
 
 static int setlocal_bpf_cc(ptls_t *ptls, const uint8_t *prog, size_t proglen) {
-  fprintf(stderr,"calling setlocal_bpf_cc");
+  char * cc_name;
+  int name_sz;
+  int f_sz;
+  int err;
+  int transportid, streamid;
+  uint8_t *prog_code;
+  char * buf = NULL;
+  unsigned int len;
+  memcpy(&name_sz, prog, 4);
+  cc_name = malloc(name_sz+1);
+  memcpy(cc_name, prog+4, name_sz);
+  *(cc_name+name_sz) = '\0';
+  memcpy(&f_sz, prog+4+name_sz,4);
+  memcpy(&transportid, prog+4+name_sz+4, 4);
+  memcpy(&streamid, prog+4+name_sz+4+4, 4);
+  prog_code = malloc(f_sz);
+  memcpy(prog_code, prog+4+name_sz+4+4+4, f_sz);
+  
+  err = load_bpf_prog(prog_code, f_sz);
+  if(err < 0)
+    fprintf(stderr, "Failed to load bpf cc, maybe the bpf cc is already loaded\n");
+  
+  
+  connect_info_t *con = connection_get(ptls->tcpls,transportid);
+  assert(con);
+  
+  err = getsockopt(con->socket, SOL_TCP, TCP_CONGESTION, buf, &len);
+  if(err){
+    perror("Failed to get cc\n");
+  }
+  
+  //fprintf(stderr, "cc: %s cc_name (%s) socket (%d)\n", buf, cc_name, con->socket);
+  
+  err = (streamid!=0) ? setsockopt(con->socket, SOL_TCP, TCP_CONGESTION, cc_name, strlen(cc_name)):
+        setsockopt(con->socket, SOL_TCP, TCP_CONGESTION, "vegas", strlen("vegas"));
+  if (err) {
+    perror("failed");
+    fprintf(stderr, "Failed to call setsockopt(TCP_CONGESTION) %d %d\n", err, errno);
+    return -1;
+  }
+  
+  //fprintf(stderr, "cc: %s cc_name (%s) socket (%d)\n", buf, cc_name, con->socket);
   return 0;
 }
 
@@ -3335,10 +3379,6 @@ static void connection_close(tcpls_t *tcpls, connect_info_t *con) {
 void tcpls_free(tcpls_t *tcpls) {
   if (!tcpls)
     return;
-#ifdef TCPLS_ENABLE_LOGGING
-  if(tcpls)
-    tlog_close_log(tcpls);
-#endif
   ptls_buffer_dispose(tcpls->sendbuf);
   ptls_buffer_dispose(tcpls->recvbuf);
   ptls_buffer_dispose(tcpls->rec_reordering);
@@ -3395,104 +3435,5 @@ free(tcpls);
 }
 
 #ifdef TCPLS_ENABLE_LOGGING
-static char *tlog_gettime(char *time_str);
-
-static char *tlog_gettime(char *time_str){
-  time_t current_time = time(NULL);
-  int i;
-  char *current_time_str = ctime(&current_time);
-  for(i = 0; i < strlen(current_time_str)-1; i++)
-    time_str[i] =((*(current_time_str+i)==' ') || (*(current_time_str+i)==':') )?'_':*(current_time_str+i);
-  time_str[i] = '\0';
-  return time_str;
-}
-
-static int tlog_open_log_file(const char *vantagepoint){
-  char *path = malloc(43*sizeof(char));
-  char *date =  malloc(31*sizeof(char));
-  start_time = gettime_ms();
-  date = tlog_gettime(date);
-  *(date+31) = '\0';
-  snprintf(path, 43, "/tmp/%s%s%s", date, vantagepoint, ".qlog");
-  int fd = open(path, O_CREAT | O_WRONLY ,
-                   S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
-  if(fd < 0){
-    fprintf(stderr, "opening file (%d) (%d) (%s)", fd, errno, path);
-  }
-  
-  return fd;
-}
-
-static size_t tlog_init_log(tcpls_t *tcpls){
-  int fd;
-  char * vantage_point = tcpls->tls->is_server?"server":"client";
-  fd = tlog_open_log_file(vantage_point);
-  tcpls->log_file = fd;  
-  size_t writen_bytes = 0;
-  writen_bytes = dprintf(tcpls->log_file, "{"
-                    "  \"qlog_version\": \"draft-01\","
-                    "  \"traces\": ["
-                    "   {"
-                    "     \"common_fields\" : { "
-                    "        \"reference_time\": \"%.6f\"},"
-                    "        \"configuration\": {\"time_units\": \"ms\" },"
-                    "     \"event_fields\" : [\"relative_time\", \"category\", \"event_type\", \"data\"],\n"
-                    "     \"events\":[", start_time/1000 );
-  return writen_bytes;
-}
-
-int tlog_close_log(tcpls_t *tcpls){
-  size_t writen_bytes = 0;
-  writen_bytes = dprintf(tcpls->log_file, "], \"vantage_point\": {\"name\": \"tcpls\", \"type\": \"%s\"}}]}", tcpls->tls->is_server?"server":"client");
-  close(tcpls->log_file);
-  return writen_bytes;
-}
-
-int tlog_transport_log(tcpls_t *tcpls, const tlog_record_evt evt, uint32_t mpseq,
-  size_t record_size, uint8_t type, uint8_t ttype, uint32_t seq, streamid_t streamid){
-  static int start = 0;
-  static const char * const evt_str[] = {
-    [data_record_tx] = "packet_sent",
-    [data_record_rx] = "packet_received",
-    [control_record_tx] = "packet_sent",
-    [control_record_rx] = "packet_received"
-  };
-  
-  static const char * const ttype_str[] = {
-    [NONE] = "NONE",
-    [CONTROL_VARLEN_BEGIN] = "CONTROL_VARLEN_BEGIN",
-    [BPF_CC] = "BPF_CC",
-    [CONNID] = "CONNID",
-    [COOKIE] = "COOKIE",
-    [DATA_ACK] = "DATA_ACK",
-    [FAILOVER] = "FAILOVER",
-    [FAILOVER_END] = "FAILOVER_END",
-    [MPJOIN] = "MPJOIN",
-    [MULTIHOMING_v6] = "MULTIHOMING_v6",
-    [MULTIHOMING_v4] = "MULTIHOMING_v4",
-    [USER_TIMEOUT] = "USER_TIMEOUT",
-    [STREAM_ATTACH] = "STREAM_ATTACH",
-    [STREAM_CLOSE] = "STREAM_CLOSE",
-    [STREAM_CLOSE_ACK] = "STREAM_CLOSE_ACK",
-    [TRANSPORT_NEW] = "TRANSPORT_NEW"
-  };
-  double delta_time = (gettime_ms() - start_time)/1000;
-  start ? dprintf(tcpls->log_file,
-            ",[\"%.6f\", \"transport\",\"%s\",{\"packet_type\":\"%s\",\"header\":{"
-            "\"packet_number\" : \"%u\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_size\":\"%lu\" }, \"frames\": [{\"frame_type\":\"stream\",\"id\": \"%u\"}, {\"frame_type\":\"%s\", \"id\":\"%u\"}]}", delta_time,
-            evt_str[evt], (type==PTLS_CONTENT_TYPE_TCPLS_DATA)?"data_record":"control_record", seq, mpseq, ttype, record_size, streamid, ttype_str[ttype], ttype) : dprintf(tcpls->log_file,
-            "[\"%.6f\", \"transport\",\"%s\",{\"packet_type\":\"%s\",\"header\":{"
-            "\"packet_number\" : \"%u\", \"record_mpath_seq\" : \"%u\" , \"record_true_type\": \"%u\", \"record_size\":\"%lu\" }, \"frames\": [{\"frame_type\":\"stream\",\"id\": \"%u\"}, {\"frame_type\":\"%s\", \"id\":\"%u\"}]}", delta_time,
-            evt_str[evt], (type==PTLS_CONTENT_TYPE_TCPLS_DATA)?"data_record":"control_record", seq, mpseq, ttype, record_size, streamid, ttype_str[ttype], ttype);
-  dprintf(tcpls->log_file, "]") ;
-  start = 1;
-  return 0;
-}
-
-static double gettime_ms(void){
-  struct timeval tv1;
-  gettimeofday(&tv1, NULL);
-  return (tv1.tv_sec * 1000000 + tv1.tv_usec);
-}
 
 #endif

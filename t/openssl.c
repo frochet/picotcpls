@@ -32,6 +32,8 @@
 #include "picotls/minicrypto.h"
 #include "../deps/picotest/picotest.h"
 #include "../lib/openssl.c"
+#include "../lib/load.c"
+#include "../lib/qlog.c"
 #include "test.h"
 
 #define RSA_PRIVATE_KEY                                                                                                            \
