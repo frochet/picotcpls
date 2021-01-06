@@ -5,6 +5,8 @@
 #include "picotls.h"
 #include "containers.h"
 #include "heap.h"
+#include "load.h"
+#include "qlog.h"
 #include <netinet/in.h>
 #define TCPLS_ENABLE_LOGGING 1
 
@@ -312,7 +314,9 @@ struct st_tcpls_t {
    * options
    */
   unsigned tcpls_options_confirmed : 1;
-  int log_file;
+  
+  /*qlog for debugging purpose*/
+  unsigned enable_qlog : 1;
 };
 
 struct st_ptls_record_t;
@@ -392,13 +396,7 @@ int tcpls_failover_signal(tcpls_t *tcpls, ptls_buffer_t *sendbuf);
 
 void ptls_tcpls_options_free(tcpls_t *tcpls);
 
-/** qlog**/
-typedef enum { 
-  data_record_tx, data_record_rx, 
-  control_record_tx, control_record_rx
-} tlog_record_evt ;
 
-int tlog_transport_log(tcpls_t *tcpls, const tlog_record_evt evt, uint32_t mpseq,
-  size_t record_size, uint8_t type, uint8_t ttype, uint32_t seq, streamid_t streamid);
-int tlog_close_log(tcpls_t *tcpls);
+/** qlog**/
+
 #endif
