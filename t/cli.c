@@ -59,6 +59,14 @@
 /* sentinels indicating that the endpoint is in benchmark mode */
 static const char input_file_is_benchmark[] = "is:benchmark";
 
+char *ebpf_program_path = NULL;
+char *ebpf_program_name = NULL;
+int goodput_file_fd = -1;
+char *goodput_file = NULL;
+static  double start_time;
+static int change_cc = 0;
+static int limit_cc  = 1;
+
 static void shift_buffer(ptls_buffer_t *buf, size_t delta)
 {
   if (delta != 0) {
@@ -144,6 +152,48 @@ static int handle_address_event(tcpls_t *tcpls, tcpls_event_t event, struct sock
       return -1;
   }
 }
+
+static double gettime_ms(void){
+  struct timeval tv1;
+  gettimeofday(&tv1, NULL);
+  return (tv1.tv_sec * 1000000 + tv1.tv_usec);
+}
+
+  
+static int load_set_cc(tcpls_t *tcpls, char *ebpf_path, char *cc_name, int transportid, int load_bpf_cc){
+  int name_sz = strlen(cc_name), ioret;
+  int fd, f_sz = 0;
+  if(ebpf_path){
+    fd = open(ebpf_path, O_RDONLY);
+    if(fd<0)
+      perror("Unable to open file");
+    lseek(fd, 0L, SEEK_END);
+    f_sz = lseek(fd, 0L, SEEK_CUR);
+    lseek(fd, 0L, SEEK_SET);
+  }
+  uint8_t *bpf_cc_buff;
+  if(load_bpf_cc)
+     bpf_cc_buff = malloc(4+name_sz+4+ 4 + 4 +f_sz);
+  else 
+     bpf_cc_buff = malloc(4+name_sz+4+ 4 + 4);
+  memcpy(bpf_cc_buff, &name_sz, 4);
+  memcpy(bpf_cc_buff+4, cc_name, name_sz);
+  memcpy(bpf_cc_buff+4+name_sz, &transportid, 4);
+  memcpy(bpf_cc_buff+4+name_sz+4, &load_bpf_cc, 4);
+  if(load_bpf_cc){
+    memcpy(bpf_cc_buff+4+name_sz+4+4, &f_sz, 4);
+    while ((ioret = read(fd, bpf_cc_buff+4+name_sz+4+4+4, f_sz)) == -1 && errno == EINTR)
+        ;
+    ptls_set_bpf_cc(tcpls->tls, (uint8_t *)bpf_cc_buff,4+name_sz+4+4+4+f_sz, 1, 1);
+    fprintf(stderr, "sending 1 (%s)\n", cc_name);
+  }else{
+    ptls_set_bpf_cc(tcpls->tls, (uint8_t *)bpf_cc_buff,4+name_sz+4+4, 1, 1);
+    fprintf(stderr, "sending 2 (%s)\n", cc_name);
+  }
+  tcpls_send_tcpoption(tcpls, transportid, BPF_CC, 1);
+  return 0;
+}
+
 
 /** Simplistic joining procedure for testing */
 static int handle_mpjoin(tcpls_t *tcpls, int socket, uint8_t *connid, uint8_t *cookie, uint32_t
@@ -370,6 +420,8 @@ static int handle_connection_event(tcpls_t *tcpls, tcpls_event_t event, int
     static const size_t block_size = 8192;
     uint8_t buf[block_size];
     int ret, ioret;
+    static int sent_data = 0;
+    static int sent_dataMB = 0;
     if (*inputfd > 0)
       while ((ioret = read(*inputfd, buf, block_size)) == -1 && errno == EINTR)
         ;
@@ -380,6 +432,28 @@ static int handle_connection_event(tcpls_t *tcpls, tcpls_event_t event, int
         /*close(inputfd);*/
         /*inputfd = -1;*/
         return -1;
+      }
+      sent_data += ioret;
+      if(sent_data/1000000 > sent_dataMB){
+        sent_dataMB++;
+        static int sent_cc = 0;
+        if(ebpf_program_path && ebpf_program_name && change_cc){
+          if(!(sent_dataMB%limit_cc)){   
+            connect_info_t *con = NULL;
+            for (int i = 0; i < tcpls->connect_infos->size; i++) {
+              con = list_get(tcpls->connect_infos, i);
+              if (con->is_primary) 
+                break;
+            }
+            if(!sent_cc){
+              sent_cc = 1;
+              load_set_cc(tcpls, ebpf_program_path, ebpf_program_name, con->this_transportid, 1);
+            }else{
+              sent_cc = 0;
+              load_set_cc(tcpls, NULL, "vegas", con->this_transportid, 0);
+            }
+          }
+        }
       }
       if (ret == TCPLS_HOLD_DATA_TO_SEND) {
         fprintf(stderr, "sending %d bytes on stream %u; not everything has been sent \n", ioret, conntotcpls->streamid);
@@ -510,9 +584,13 @@ static int handle_connection_event(tcpls_t *tcpls, tcpls_event_t event, int
             break;
           }
           received_data += ret;
-          if (received_data / 1000000 > mB_received) {
-            mB_received++;
-            printf("Received %d MB\n",mB_received);
+          if (received_data / 20000000 > mB_received) {
+            static double last_delta_time = 0;
+            double delta_time = (gettime_ms() - start_time)/1000;
+            mB_received+=1;
+            dprintf(goodput_file_fd, "%.6f  %.6f %d\n", delta_time/1000, 
+                        (20/(delta_time-last_delta_time))*1000*8, mB_received*20);
+            last_delta_time = delta_time;
           }
           if (outputfile && ret >= 0) {
             /** write infos on this received data */
@@ -1134,6 +1212,13 @@ static int handle_connection_event(tcpls_t *tcpls, tcpls_event_t event, int
     signal(SIGPIPE, sig_handler);
 
     if (ctx->support_tcpls_options) {
+    
+      char *path = malloc(5+strlen(goodput_file) + 5);
+      snprintf(path, 5+strlen(goodput_file) + 5, "/tmp/%s%s", goodput_file, ".log");
+      goodput_file_fd = open(path, O_CREAT | O_WRONLY ,
+                   S_IRUSR | S_IWUSR | S_IRGRP | S_IWGRP | S_IROTH);
+      start_time = gettime_ms();
+                 
       int ret = handle_client_connection(tcpls, &data, test);
       free(hsprop->client.esni_keys.base);
       tcpls_free(tcpls);
@@ -1239,7 +1324,7 @@ static int handle_connection_event(tcpls_t *tcpls, tcpls_event_t event, int
     tcpls_options.peer_addrs6 = new_list(39*sizeof(char), 2);
     int family = 0;
 
-    while ((ch = getopt(argc, argv, "46abBC:c:i:Ik:nN:es:SE:K:l:y:vhtd:p:P:z:Z:T:fg:")) != -1) {
+    while ((ch = getopt(argc, argv, "46abBC:c:i:Ik:nN:es:SE:K:l:y:vhtd:p:P:z:Z:T:fg:j:m:x:rw:")) != -1) {
       switch (ch) {
         case '4':
           family = AF_INET;
@@ -1457,6 +1542,21 @@ static int handle_connection_event(tcpls_t *tcpls, tcpls_event_t event, int
                   break;
         case 'g':
                   goodputfile = optarg;
+                  break;
+        case 'm':
+                  ebpf_program_path = optarg;
+                  break;
+        case 'j':
+                  ebpf_program_name = optarg;
+                  break;
+        case 'x':
+                  goodput_file = optarg;
+                  break;
+        case 'r':
+                  change_cc = 1;
+                  break;
+        case 'w':
+                  limit_cc = atoi(optarg);
                   break;
         default:
                   exit(1);

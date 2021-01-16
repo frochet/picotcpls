@@ -5,6 +5,7 @@
 #include "picotls.h"
 #include "containers.h"
 #include "heap.h"
+#include "load.h"
 #include <netinet/in.h>
 #define NBR_SUPPORTED_TCPLS_OPTIONS 5
 #define VARSIZE_OPTION_MAX_CHUNK_SIZE 4*16384 /* should be able to hold 4 records before needing to be extended */
@@ -354,7 +355,7 @@ int tcpls_set_user_timeout(tcpls_t *tcpls, int transportid, uint16_t value,
 
 int ptls_set_failover(ptls_t *ptls, char *address);
 
-int ptls_set_bpf_scheduler(ptls_t *ptls, const uint8_t *bpf_prog_bytecode,
+int ptls_set_bpf_cc(ptls_t *ptls, const uint8_t *bpf_prog_bytecode,
     size_t bytecodelen, int setlocal, int settopeer);
 
 int tcpls_send_tcpoption(tcpls_t *tcpls, int transportid, tcpls_enum_t type, int sendnow);

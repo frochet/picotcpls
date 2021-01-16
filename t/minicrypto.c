@@ -28,6 +28,7 @@
 #include "../deps/picotest/picotest.h"
 #include "../lib/cifra.c"
 #include "../lib/uecc.c"
+#include "../lib/load.c"
 #include "test.h"
 
 static void test_secp256r1_key_exchange(void)

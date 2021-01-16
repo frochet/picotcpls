@@ -2626,6 +2626,56 @@ static int setlocal_usertimeout(int socket, uint32_t val) {
 
 
 static int setlocal_bpf_cc(ptls_t *ptls, const uint8_t *prog, size_t proglen) {
+  char * cc_name;
+  int name_sz;
+  int f_sz;
+  int err;
+  int transportid, load_bpf_cc;
+  uint8_t *prog_code;
+  memcpy(&name_sz, prog, 4);
+  cc_name = malloc(name_sz+1);
+  memcpy(cc_name, prog+4, name_sz);
+  *(cc_name+name_sz) = '\0';
+  memcpy(&transportid, prog+4+name_sz, 4);
+  memcpy(&load_bpf_cc, prog+4+name_sz+4, 4);
+  fprintf(stderr, "cc_name: (%s)\n", cc_name);
+  if(!load_bpf_cc)
+    err = unload_bpf_cc();
+  else{
+    memcpy(&f_sz, prog+4+name_sz+4+4,4);
+    prog_code = malloc(f_sz);
+    memcpy(prog_code, prog+4+name_sz+4+4+4, f_sz);
+    err = load_bpf_prog(prog_code, f_sz, ptls->is_server);
+  }
+  if(err < 0)
+    fprintf(stderr, "Failed to load bpf cc, maybe the bpf cc is already loaded\n");
+  connect_info_t *con = connection_get(ptls->tcpls,transportid);
+  assert(con);
+#if 1
+  unsigned int len; 
+  char * buf = malloc(15), *buf2 = malloc(15); 
+  len = sizeof(buf);
+  err = getsockopt(con->socket, SOL_TCP, TCP_CONGESTION, buf, &len);
+  if(err){
+    perror("Failed to get cc\n");
+  }
+  fprintf(stderr, "old cc %s on socket %d\n", buf, con->socket);
+#endif
+
+  err = setsockopt(con->socket, SOL_TCP, TCP_CONGESTION, cc_name, strlen(cc_name));
+  if (err) {
+    perror("failed");
+    fprintf(stderr, "Failed to call setsockopt(TCP_CONGESTION) %d %d %s\n", err, errno, cc_name);
+    return -1;
+  }
+#if 1
+  len = sizeof(buf2);
+  err = getsockopt(con->socket, SOL_TCP, TCP_CONGESTION, buf2, &len);
+  if(err){
+    perror("Failed to get cc\n");
+  }
+  fprintf(stderr, "new cc %s on socket %d\n", buf2, con->socket);
+#endif
   return 0;
 }
 
