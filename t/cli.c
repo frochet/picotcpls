@@ -615,6 +615,9 @@ static int handle_server_multipath_test(list_t *conn_tcpls, integration_test_t t
 
 static int handle_client_perf_test(tcpls_t *tcpls, struct cli_data *data) {
   int ret;
+  size_t total_recvd = 0;
+  struct timespec start_time;
+  clock_gettime(CLOCK_MONOTONIC, &start_time);
   tcpls_buffer_t *recvbuf = tcpls_stream_buffers_new(tcpls, 1);
   if (handle_tcpls_read(tcpls, 0, recvbuf, data->streamlist, NULL) < 0) {
     ret = -1;
@@ -660,12 +663,19 @@ static int handle_client_perf_test(tcpls_t *tcpls, struct cli_data *data) {
       for (int i = 0; i < recvbuf->wtr_streams->size; i++) {
         streamid = list_get(recvbuf->wtr_streams, i);
         buf = tcpls_get_stream_buffer(recvbuf, *streamid);
+        total_recvd += buf->off;
         buf->off = 0;// blackhole the received data
       }
     }
   }
-Exit:
+Exit: {
+  struct timespec end_time;
+  clock_gettime(CLOCK_MONOTONIC, &end_time);
+  double duration = (end_time.tv_sec - start_time.tv_sec) + (end_time.tv_nsec - start_time.tv_nsec) / 1000000000.0;
+  double throughput = (double) total_recvd * 8 / duration / 10000000.0;
+  fprintf(stderr, "Received %ld bytes over %0.3f seconds, goodput is %0.3f Mbit/s\n", total_recvd, duration, throughput);
   tcpls_buffer_free(tcpls, recvbuf);
+}
   return ret;
 }
 static int handle_client_transfer_test(tcpls_t *tcpls, int test, struct cli_data *data) {
