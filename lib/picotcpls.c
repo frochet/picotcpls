@@ -48,6 +48,7 @@
  */
 
 #include <arpa/inet.h>
+#include <event2/event.h>
 #include <linux/bpf.h>
 #include <linux/tcp.h>
 #include <stdio.h>
@@ -115,6 +116,8 @@ static int try_decrypt_with_multistreams(tcpls_t *tcpls, const void *input, tcpl
 
 /**
 * Create a new TCPLS object
+*
+* For servers, ideally one event_base per core.
 */
 void *tcpls_new(void *ctx, int is_server) {
   ptls_t *tls;
@@ -162,6 +165,10 @@ void *tcpls_new(void *ctx, int is_server) {
   tcpls->schedule_receive = &round_robin_con_scheduler;
   tls->tcpls = tcpls;
   return tcpls;
+}
+
+void tcpls_set_event_base(tcpls_t *tcpls, struct event_base *base) {
+  tcpls->base = base;
 }
 
 /**

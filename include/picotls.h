@@ -882,6 +882,14 @@ typedef struct st_ptls_log_event_t {
      * Optional data to be passed to the callback functions
      */
     void *cb_data;
+
+    /** if enabled, tcpls proposes an asyncronous interface to face the raw api */
+    unsigned is_async : 1;
+
+    /**
+     * The event base if used in async mode
+     */
+     struct event_base *base;
   };
 
   typedef struct st_ptls_raw_extension_t {
