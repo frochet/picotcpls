@@ -12,7 +12,7 @@ IF (WITH_DTRACE)
     MESSAGE(STATUS "Enabling USDT support")
 ENDIF ()
 
-SET(CMAKE_C_FLAGS "-std=c99 -O2 -g3 -Wall ${CC_WARNING_FLAGS} ${CMAKE_C_FLAGS}")
+SET(CMAKE_C_FLAGS "-std=c99 -O2 -g -Wall ${CC_WARNING_FLAGS} ${CMAKE_C_FLAGS}")
 SET(PYTHON_EXECUTABLE, "python3")
 INCLUDE_DIRECTORIES(
     deps/cifra/src/ext

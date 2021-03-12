@@ -490,6 +490,10 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
           }
           /** we connected! */
           else {
+            if (tcpls->tls->ctx->is_async) {
+              event_new(tcpls->base, con->socket, EV_READ|EV_PERSIST, read_cb, tcpls);
+              event_new(tcpls->base, con->socket, EV_WRITE|EV_PERSIST, write_cb, tcpls);
+            }
             compute_client_rtt(con, timeout, &t_initial, &t_previous);
           }
         }
@@ -3204,6 +3208,7 @@ static int new_stream_derive_aead_context(ptls_t *tls, tcpls_stream_t *stream, i
 
   stream->aead_enc = ptls_aead_new_direct(tls->cipher_suite->aead,
       1, key, iv);
+  stream->aead_enc->seq = 0;
   if (!stream->aead_enc)
     return PTLS_ERROR_NO_MEMORY;
 
@@ -3221,6 +3226,7 @@ static int new_stream_derive_aead_context(ptls_t *tls, tcpls_stream_t *stream, i
   stream_derive_new_aead_iv(tls, iv, tls->cipher_suite->aead->iv_size, stream->offset, is_client_origin);
   stream->aead_dec = ptls_aead_new_direct(tls->cipher_suite->aead,
     0, key, iv);
+  stream->aead_dec->seq = 0;
   if (stream->aead_dec)
     return PTLS_ERROR_NO_MEMORY;
   return 0;
