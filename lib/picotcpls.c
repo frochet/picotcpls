@@ -1253,6 +1253,7 @@ int tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbyte
      * created before the handshake */
     if (!stream->aead_initialized) {
       if (new_stream_derive_aead_context(tls, stream, is_client_origin)) {
+        fprintf(stderr, "Failed to derive AEAD context\n");
         return -1;
       }
       stream->aead_initialized = 1;
@@ -3158,14 +3159,24 @@ static int check_con_has_connected(tcpls_t *tcpls, connect_info_t *con, int *res
 static void stream_derive_new_aead_iv(ptls_t *tls, uint8_t *iv, int iv_size, uint32_t offset, int is_client_origin) {
   /** TODO for parallel stream attachment, the offset should be given in the
    * STREAM_ATTACH message */
+  PTLS_DEBUGF(stderr, "New IV with iv(%d): ", iv_size);
+  for (int i = 0; i < iv_size; i++) {
+    PTLS_DEBUGF(stderr, "%02x ", iv[i]);
+  }
+  PTLS_DEBUGF(stderr, "and offset: %d\n", offset);
   if (iv_size == 12) {
-    /* Take the 25 LSB out of the 32 MSB IV, clear the top 7 bits */
-    uint32_t msb_iv = *(uint32_t *) iv;
+    uint32_t msb_iv = ntohl(*(uint32_t *) (iv + iv_size - sizeof(uint32_t)));
     if (is_client_origin)
       msb_iv = (msb_iv + offset) % 0xffffffff;
     else
       msb_iv = (msb_iv - offset) % 0xffffffff;
-    memcpy(iv, &msb_iv, sizeof(uint32_t));
+    msb_iv = htonl(msb_iv);
+    memcpy(iv + iv_size - sizeof(uint32_t), &msb_iv, sizeof(uint32_t));
+    PTLS_DEBUGF(stderr, "Resulting iv(%d): ", iv_size);
+    for (int i = 0; i < iv_size; i++) {
+      PTLS_DEBUGF(stderr, "%02x ", iv[i]);
+    }
+    PTLS_DEBUGF(stderr, "\n");
   }
   else if (iv_size == 16) {
     fprintf(stderr, "IV derivation with 128 bits IVs: Not implemented yet\n");
@@ -3193,6 +3204,8 @@ static int new_stream_derive_aead_context(ptls_t *tls, tcpls_stream_t *stream, i
   uint8_t iv[PTLS_MAX_IV_SIZE];
   int ret;
 
+  PTLS_DEBUGF(stderr, "New AEAD context\n");
+
   if ((ret = ptls_hkdf_expand_label(tls->cipher_suite->hash, key,
           tls->cipher_suite->aead->key_size, ptls_iovec_init(ctx_enc->secret,
             tls->cipher_suite->hash->digest_size), "key", ptls_iovec_init(NULL, 0),
@@ -3211,6 +3224,7 @@ static int new_stream_derive_aead_context(ptls_t *tls, tcpls_stream_t *stream, i
   stream->aead_enc->seq = 0;
   if (!stream->aead_enc)
     return PTLS_ERROR_NO_MEMORY;
+  stream->aead_enc->seq = 0;
 
   if ((ret = ptls_hkdf_expand_label(tls->cipher_suite->hash, key,
           tls->cipher_suite->aead->key_size, ptls_iovec_init(ctx_dec->secret,
@@ -3226,9 +3240,20 @@ static int new_stream_derive_aead_context(ptls_t *tls, tcpls_stream_t *stream, i
   stream_derive_new_aead_iv(tls, iv, tls->cipher_suite->aead->iv_size, stream->offset, is_client_origin);
   stream->aead_dec = ptls_aead_new_direct(tls->cipher_suite->aead,
     0, key, iv);
-  stream->aead_dec->seq = 0;
-  if (stream->aead_dec)
+  if (!stream->aead_dec)
     return PTLS_ERROR_NO_MEMORY;
+  stream->aead_dec->seq = 0;
+
+  PTLS_DEBUGF(stderr, "Key: ");
+  for (int i = 0; i < sizeof(key); i++) {
+    PTLS_DEBUGF(stderr, "%02x ", key[i]);
+  }
+
+  PTLS_DEBUGF(stderr, "\nIV: ");
+  for (int i = 0; i < sizeof(iv); i++) {
+    PTLS_DEBUGF(stderr, "%02x ", iv[i]);
+  }
+  PTLS_DEBUGF(stderr, "\n");
   return 0;
 }
 
@@ -3261,9 +3286,12 @@ static tcpls_stream_t *stream_new(ptls_t *tls, streamid_t streamid,
     stream->send_queue = tcpls_record_queue_new(2000);
   if (ptls_handshake_is_complete(tls)) {
     /** Now derive a correct aead context for this stream */
-    new_stream_derive_aead_context(tls, stream, is_client_origin);
-    stream->aead_initialized = 1;
-    stream->stream_usable = 1;
+    if (new_stream_derive_aead_context(tls, stream, is_client_origin)) {
+      fprintf(stderr, "Failed to derive AEAD context for stream id %u\n", streamid);
+    } else {
+      stream->aead_initialized = 1;
+      stream->stream_usable = 1;
+    }
   }
   else {
     stream->aead_enc = NULL;
