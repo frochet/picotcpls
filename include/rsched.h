@@ -4,6 +4,6 @@
 #include "picotls.h"
 #include "picotcpls.h"
 
-int round_robin_con_scheduler(tcpls_t *tcpls, fd_set *rset, tcpls_buffer_t *decryptbuf, void *data);
+int simple_read_scheduler(tcpls_t *tcpls, int transportid, tcpls_buffer_t *decryptbuf, void *data);
 
 #endif

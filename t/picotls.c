@@ -25,6 +25,7 @@
 #include <assert.h>
 #include <string.h>
 #include <stdio.h>
+#include <event2/event.h>
 #include "picotypes.h"
 #include "picotls.h"
 #include "picotcpls.h"

@@ -75,7 +75,7 @@ static int setlocal_bpf_cc(ptls_t *ptls, const uint8_t *bpf_prog, size_t proglen
 static void _set_primary(tcpls_t *tcpls);
 static tcpls_stream_t *stream_new(ptls_t *tcpls, streamid_t streamid,
   connect_info_t *con, uint32_t offset, int is_client_origin);
-static void stream_free(tcpls_stream_t *stream);
+static void stream_free(tcpls_t *tcpls, tcpls_stream_t *stream);
 static int cmp_times(struct timeval *t1, struct timeval *t2);
 static int stream_send_control_message(ptls_t *tls, streamid_t streamid, ptls_buffer_t *sendbuf, ptls_aead_context_t *enc,
   const void *inputinfo, tcpls_enum_t message, uint32_t message_len);
@@ -113,6 +113,9 @@ static int send_unacked_data(tcpls_t *tcpls, tcpls_stream_t *stream, connect_inf
 static int do_send(tcpls_t *tcpls, tcpls_stream_t *stream, connect_info_t *con);
 static int initiate_recovering(tcpls_t *tcpls, connect_info_t *con);
 static int try_decrypt_with_multistreams(tcpls_t *tcpls, const void *input, tcpls_buffer_t *decryptbuf,  size_t *input_off, size_t input_size);
+static void tcpls_internal_write(evutil_socket_t fd, short what, void *arg);
+static void write_cb(evutil_socket_t fd, short what, void *arg);
+static void read_cb(evutil_socket_t fd, short what, void *arg);
 
 /**
 * Create a new TCPLS object
@@ -162,13 +165,13 @@ void *tcpls_new(void *ctx, int is_server) {
   tcpls->tcpls_options = new_list(sizeof(tcpls_options_t), NBR_SUPPORTED_TCPLS_OPTIONS);
   tcpls->streams = new_list(sizeof(tcpls_stream_t), 3);
   tcpls->connect_infos = new_list(sizeof(connect_info_t), 2);
-  tcpls->schedule_receive = &round_robin_con_scheduler;
+  tcpls->schedule_receive = &simple_read_scheduler;
   tls->tcpls = tcpls;
   return tcpls;
 }
 
 void tcpls_set_event_base(tcpls_t *tcpls, struct event_base *base) {
-  tcpls->base = base;
+  tcpls->tls->ctx->base = base;
 }
 
 /**
@@ -491,8 +494,17 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
           /** we connected! */
           else {
             if (tcpls->tls->ctx->is_async) {
-              event_new(tcpls->base, con->socket, EV_READ|EV_PERSIST, read_cb, tcpls);
-              event_new(tcpls->base, con->socket, EV_WRITE|EV_PERSIST, write_cb, tcpls);
+              struct st_read_data_cb *datacb = malloc(sizeof(struct st_read_data_cb));
+              if (!datacb)
+                return -1;
+              datacb->transportid = con->this_transportid;
+              datacb->tcpls = tcpls;
+              con->datareadcb = datacb;
+              con->ev_read = event_new(tcpls->tls->ctx->base, con->socket,
+                  EV_READ|EV_PERSIST, read_cb, datacb);
+              /*event_priority_set(con->ev_read, 1);*/
+              // Add the event after the handshake
+              /*event_add(con->ev_read, NULL);*/
             }
             compute_client_rtt(con, timeout, &t_initial, &t_previous);
           }
@@ -550,6 +562,16 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
       coninfo.buffrag = malloc(sizeof(ptls_buffer_t));
       memset(coninfo.buffrag, 0, sizeof(ptls_buffer_t));
       ptls_buffer_init(coninfo.buffrag, "", 0);
+      if (tls->ctx->is_async) {
+        struct st_read_data_cb *datacb = malloc(sizeof(struct st_read_data_cb));
+        if (!datacb)
+          return -1;
+        datacb->transportid = con->this_transportid;
+        datacb->tcpls = tcpls;
+        con->datareadcb = datacb;
+        con->ev_read = event_new(tcpls->tls->ctx->base, con->socket, EV_READ|EV_PERSIST, read_cb, datacb);
+        /*event_priority_set(con->ev_read, 1);*/
+      }
       if (ptls_buffer_reserve(coninfo.buffrag, 5) != 0)
         return -1;
       if (properties->client.dest->ss_family == AF_INET) {
@@ -712,6 +734,10 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
         con->state = JOINED;
         // remove the cookie we have sent
         tcpls->cookies->size -= 1;
+        /* if this is a async tcpls, add the event */
+        if (tls->ctx->is_async) {
+          event_add(con->ev_read, NULL);
+        }
       }
       return rret;
     }
@@ -765,6 +791,9 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
       }
     }
     con->state = JOINED;
+    if (tls->ctx->is_async) {
+      event_add(con->ev_read, NULL);
+    }
   }
   ptls_buffer_dispose(&sendbuf);
   return ret;
@@ -864,7 +893,17 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
       ptls_buffer_init(newconn.buffrag, "", 0);
       if (ptls_buffer_reserve(newconn.buffrag, 5) != 0)
         return PTLS_ERROR_NO_MEMORY;
-
+      if (tcpls->tls->ctx->is_async) {
+        struct st_read_data_cb *datacb = malloc(sizeof(struct st_read_data_cb));
+        if (!datacb)
+          return -1;
+        datacb->transportid = newconn.this_transportid;
+        datacb->tcpls = tcpls;
+        newconn.datareadcb = datacb;
+        newconn.ev_read = event_new(tcpls->tls->ctx->base, newconn.socket,
+            EV_READ|EV_PERSIST, read_cb, datacb);
+        /*event_priority_set(newconn.ev_read, 1);*/
+      }
     }
     else {
       assert(con->state == CLOSED || con->state == FAILED);
@@ -892,6 +931,17 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
       ptls_buffer_init(newconn.buffrag, "", 0);
       if (ptls_buffer_reserve(newconn.buffrag, 5) != 0)
         return PTLS_ERROR_NO_MEMORY;
+      if (tcpls->tls->ctx->is_async) {
+        struct st_read_data_cb *datacb = malloc(sizeof(struct st_read_data_cb));
+        if (!datacb)
+          return -1;
+        datacb->transportid = newconn.this_transportid;
+        datacb->tcpls = tcpls;
+        newconn.datareadcb = datacb;
+        newconn.ev_read = event_new(tcpls->tls->ctx->base, newconn.socket,
+            EV_READ|EV_PERSIST, read_cb, datacb);
+        /*event_priority_set(newconn.ev_read, 1);*/
+      }
     }
     else {
       assert(con->state == CLOSED);
@@ -1199,8 +1249,8 @@ int tcpls_stream_close(ptls_t *tls, streamid_t streamid, int sendnow) {
  */
 
 
-int tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbytes) {
-  tcpls_t *tcpls = tls->tcpls;
+int tcpls_send(tcpls_t *tcpls, streamid_t streamid, const void *input, size_t nbytes) {
+  ptls_t *tls = tcpls->tls;
   int ret;
   tcpls_stream_t *stream;
   /*int is_failover_enabled = 0;*/
@@ -1227,15 +1277,15 @@ int tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbyte
     }
     stream->need_sending_attach_event = 0;
     stream->stream_usable = 1;
-    uint8_t input[12];
+    uint8_t input_streamattach[12];
     /** send the stream id to the peer */
-    memcpy(input, &stream->streamid, 4);
-    memcpy(&input[4], &con->this_transportid, 4);
-    memcpy(&input[8], &tcpls->nbr_of_our_streams_attached, 4);
+    memcpy(input_streamattach, &stream->streamid, 4);
+    memcpy(&input_streamattach[4], &con->this_transportid, 4);
+    memcpy(&input_streamattach[8], &tcpls->nbr_of_our_streams_attached, 4);
     /** Add a stream message creation to the sending buffer ! */
     tcpls->sending_stream = stream;
     stream_send_control_message(tcpls->tls, 0, stream->sendbuf,
-        tls->traffic_protection.enc.aead, input, STREAM_ATTACH, 12);
+        tls->traffic_protection.enc.aead, input_streamattach, STREAM_ATTACH, 12);
     /** To check whether we sent it and if the stream becomes usable */
     stream->send_stream_attach_in_sendbuf_pos = stream->sendbuf->off;
     tcpls->check_stream_attach_sent = 1;
@@ -1302,6 +1352,43 @@ int tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbyte
   else {
     return TCPLS_OK;
   }
+}
+
+/**
+ * Add the event to the application's loop
+ */
+void tcpls_streamid_want_to_send(tcpls_t *tcpls, streamid_t streamid) {
+  if (!tcpls->tls->ctx->is_async)
+    return;
+  tcpls_stream_t *stream = stream_get(tcpls, streamid);
+  if (stream) {
+    event_add(stream->ev_stream_want_to_send, NULL);
+  }
+}
+
+/**
+ * Calls app's write cb
+ */
+
+static void write_cb(evutil_socket_t fd, short what, void *arg) {
+  struct st_internal_sent *datacb = (struct st_internal_sent *) arg;
+  tcpls_t *tcpls = datacb->tcpls;
+  int is_timeout = 0;
+  if (what&EV_TIMEOUT)
+    is_timeout = 1;
+  tcpls->tls->ctx->write_cb(tcpls, datacb->streamid, is_timeout);
+}
+
+/**
+ * Calls app's read cb
+ */
+static void read_cb(evutil_socket_t fd, short what, void *arg) {
+  struct st_read_data_cb *datacb = (struct st_read_data_cb *) arg;
+  tcpls_t *tcpls = datacb->tcpls;
+  int is_timeout = 0;
+  if (what&EV_TIMEOUT)
+    is_timeout = 1;
+  tcpls->tls->ctx->read_cb(tcpls, datacb->transportid, is_timeout);
 }
 
 /**
@@ -1383,28 +1470,41 @@ int tcpls_internal_data_process(tcpls_t *tcpls, connect_info_t *con,  int recvre
  * // TODO adding configurable callbacks for TCPLS events
  */
 
-int tcpls_receive(ptls_t *tls, tcpls_buffer_t *buf, struct timeval *tv) {
+int tcpls_receive(tcpls_t *tcpls, tcpls_buffer_t *buf, int transportid, struct timeval *tv) {
   fd_set rset;
+  ptls_t *tls = tcpls->tls;
   int selectret;
-  tcpls_t *tcpls = tls->tcpls;
-  FD_ZERO(&rset);
-  connect_info_t *con;
-  int maxfd = 0;
-  for (int i = 0; i < tcpls->connect_infos->size; i++) {
-    con = list_get(tcpls->connect_infos, i);
-    if (con->state >= CONNECTED) {
-      FD_SET(con->socket, &rset);
-      if (maxfd < con->socket)
-        maxfd = con->socket;
+  if (!tls->ctx->is_async) {
+    FD_ZERO(&rset);
+    connect_info_t *con;
+    int maxfd = 0;
+    for (int i = 0; i < tcpls->connect_infos->size; i++) {
+      con = list_get(tcpls->connect_infos, i);
+      if (con->state >= CONNECTED) {
+        FD_SET(con->socket, &rset);
+        if (maxfd < con->socket)
+          maxfd = con->socket;
+      }
+    }
+    selectret = select(maxfd+1, &rset, NULL, NULL, tv);
+    if (selectret <= 0) {
+      return -1;
+    }
+    for (int i = 0; i < tcpls->connect_infos->size; i++) {
+      con = connection_get(tcpls, i);
+      if (FD_ISSET(con->socket, &rset) && con->state >= CONNECTED) {
+        // TODO is it necessary to pass any data pointer to the user-written
+        // scheduler?
+        if (tcpls->schedule_receive(tcpls, con->this_transportid, buf, NULL) < 0)
+          return -1;
+      }
     }
   }
-  selectret = select(maxfd+1, &rset, NULL, NULL, tv);
-  if (selectret <= 0) {
-    return -1;
+  else {
+    /* Call a scheduler from rsched.c */
+    if (tcpls->schedule_receive(tcpls, transportid, buf, NULL) < 0)
+      return -1;
   }
-  /* Call a scheduler from rsched.c */
-  if (tcpls->schedule_receive(tcpls, &rset, buf, NULL) < 0)
-    return -1;
   /** flush an ack if needed */
   if (send_ack_if_needed(tcpls, NULL))
     return -1;
@@ -1546,6 +1646,18 @@ int tcpls_set_bpf_cc(tcpls_t *tcpls, const uint8_t *bpf_prog_bytecode, size_t by
 }
 
 /*===================================Internal========================================*/
+
+/**
+ * Continue to send and add the event back if there is still things to send for
+ * that stream
+ */
+
+static void tcpls_internal_write(evutil_socket_t fd, short what, void *arg) {
+  struct st_internal_sent *cbdata  = (struct st_internal_sent *) arg;
+  streamid_t streamid = cbdata->streamid;
+  tcpls_t *tcpls = cbdata->tcpls;
+  tcpls_send(tcpls, streamid, NULL, 0);
+}
 
 /**
  * Compare two uint32_t for ordering
@@ -2809,6 +2921,9 @@ static int did_we_sent_everything(tcpls_t *tcpls, tcpls_stream_t *stream, int by
     else {
       /* will be sent at the next send */
       *send_start = sending;
+      if (tcpls->tls->ctx->is_async) {
+        event_add(stream->ev_internal_write, NULL);
+      }
     }
   }
   return 1;
@@ -2890,7 +3005,7 @@ static void tcpls_housekeeping(tcpls_t *tcpls) {
     }
     for (int i = 0; i < streams_to_remove->size; i++) {
       stream = stream_get(tcpls, *(streamid_t *) list_get(streams_to_remove, i));
-      stream_free(stream);
+      stream_free(tcpls, stream);
       assert(!list_remove(tcpls->streams, stream));
     }
     list_free(streams_to_remove);
@@ -3298,6 +3413,24 @@ static tcpls_stream_t *stream_new(ptls_t *tls, streamid_t streamid,
     stream->aead_dec = NULL;
     stream->aead_initialized = 0;
   }
+  if (tls->ctx->is_async) {
+    /*event_priority_set(stream->ev_stream_want_to_send, 1);*/
+    /* Now internal send event. i.e., if the app buffers too much data at once */
+    stream->datacb_internal = malloc(sizeof(struct st_internal_sent));
+    /* XXX we probably need to come up with code errors */
+    if (!stream->datacb_internal)
+      return NULL;
+    stream->datacb_internal->streamid = stream->streamid;
+    stream->datacb_internal->tcpls = tcpls;
+    stream->ev_internal_write = event_new(tcpls->tls->ctx->base, con->socket, EV_WRITE,
+        tcpls_internal_write, stream->datacb_internal);
+    stream->ev_stream_want_to_send = event_new(tcpls->tls->ctx->base, con->socket,
+        EV_WRITE, write_cb, stream->datacb_internal);
+    /** this has highest priority, especially over app-level sends event 
+     *  XXX Do something smarter, with priorities per-connections */
+    /*event_priority_set(stream->ev_internal_write, 0);*/
+  }
+
   return stream;
 }
 
@@ -3334,13 +3467,23 @@ connect_info_t* connection_get(tcpls_t *tcpls, uint32_t transportid) {
   return NULL;
 }
 
-static void stream_free(tcpls_stream_t *stream) {
+static void stream_free(tcpls_t *tcpls, tcpls_stream_t *stream) {
   if (!stream)
     return;
   ptls_buffer_dispose(stream->sendbuf);
   // XXX make a tcpls_record_free function in container.c
   if (stream->send_queue)
     tcpls_record_fifo_free(stream->send_queue);
+  if (tcpls->tls->ctx->is_async) {
+    event_free(stream->ev_stream_want_to_send);
+  }
+  if (tcpls->tls->ctx->is_async) {
+    event_free(stream->ev_internal_write);
+    free(stream->datacb_internal);
+    if (stream->ev_stream_want_to_send)
+      event_free(stream->ev_stream_want_to_send);
+  }
+  // XXX TODO
   /*ptls_aead_free(stream->aead_enc);*/
   /*ptls_aead_free(stream->aead_dec);*/
 }
@@ -3518,6 +3661,10 @@ static void connection_close(tcpls_t *tcpls, connect_info_t *con) {
   tcpls->nbr_tcp_streams--;
   con->buffrag->off = 0;
   tcpls->buffrag->off = 0;
+  if (tcpls->tls->ctx->is_async) {
+    event_free(con->ev_read);
+    free(con->datareadcb);
+  }
 }
 
 void tcpls_free(tcpls_t *tcpls) {
@@ -3536,7 +3683,7 @@ void tcpls_free(tcpls_t *tcpls) {
   tcpls_stream_t *stream;
   for (int i = 0; i < tcpls->streams->size; i++) {
     stream = list_get(tcpls->streams, i);
-    stream_free(stream);
+    stream_free(tcpls, stream);
   }
   list_free(tcpls->streams);
   list_free(tcpls->connect_infos);

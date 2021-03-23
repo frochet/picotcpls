@@ -95,6 +95,21 @@ typedef struct st_tcpls_v6_addr_t {
   struct st_tcpls_v6_addr_t *next;
 } tcpls_v6_addr_t;
 
+/** contains info to pass to the internal sent callback */
+struct st_internal_sent {
+  streamid_t streamid;
+  tcpls_t *tcpls;
+};
+
+/** contains default information to pass on a read callback the application may
+ * pass other things */
+
+struct st_read_data_cb {
+  int transportid;
+  tcpls_t *tcpls;
+};
+
+
 typedef struct st_connect_info_t {
   tcpls_tcp_state_t state; /* Connection state */
   int socket;
@@ -133,6 +148,16 @@ typedef struct st_connect_info_t {
   /** only one is used */
   tcpls_v4_addr_t *dest;
   tcpls_v6_addr_t *dest6;
+  /**
+   * if tcpls is used in a asynchronous mode, we need to register READ/WRITE
+   * events
+   */
+  struct event *ev_write;
+  struct event *ev_read;
+  /** used for checking on the failover read timer every x ms */
+  struct event *ev_failover;
+  
+  struct st_read_data_cb *datareadcb;
 
 } connect_info_t;
 
@@ -203,6 +228,16 @@ typedef struct st_tcpls_stream {
   unsigned int failover_end_sent : 1;
   unsigned int failover_end_received : 1;
   uint32_t last_seq_poped;
+
+  /** if async mode is on */
+  struct event *ev_stream_want_to_send;
+  /** used for internal write -- e.g., if the app encrypts way too much
+   * information at a time, we may be looping on sending this data with high
+   * priority */
+  struct event *ev_internal_write;
+
+  struct st_internal_sent *datacb_internal;
+
 } tcpls_stream_t;
 
 
@@ -323,7 +358,7 @@ struct st_tcpls_t {
    * Scheduler callback for the receiver. Can be set by the application to
    * instrument how multiple connections should pull bytes.
    */
-  int (*schedule_receive)(tcpls_t *tcpls, fd_set *rset, tcpls_buffer_t *decryptbuf, void *data);
+  int (*schedule_receive)(tcpls_t *tcpls, int transportid, tcpls_buffer_t *decryptbuf, void *data);
 
   /**
    * Set to 1 if the other peer also announced it supports Encrypted TCP
@@ -333,6 +368,7 @@ struct st_tcpls_t {
 };
 
 struct st_ptls_record_t;
+
 
 /*=====================================API====================================*/
 
@@ -365,13 +401,19 @@ int tcpls_stream_close(ptls_t *tls, streamid_t streamid, int sendnow);
  * stream.
  */
 
-int tcpls_send(ptls_t *tls, streamid_t streamid, const void *input, size_t nbytes);
+int tcpls_send(tcpls_t *tls, streamid_t streamid, const void *input, size_t nbytes);
+
+/**
+ * for the async mode only; add an event in the eventloop for streamid
+ */
+
+void tcpls_streamid_want_to_send(tcpls_t *tcpls, streamid_t streamid);
 
 /**
  * Eventually read bytes and pu them in input -- Make sure the socket is
  * in blocking mode
  */
-int tcpls_receive(ptls_t *tls, tcpls_buffer_t *input, struct timeval *tv);
+int tcpls_receive(tcpls_t *tcpls, tcpls_buffer_t *input, int transportid, struct timeval *tv);
 
 int tcpls_set_user_timeout(tcpls_t *tcpls, int transportid, uint16_t value,
     uint16_t msec_or_sec, uint8_t setlocal, uint8_t settopeer);
