@@ -12,7 +12,7 @@ jobs:
           submodules: recursive
 
       - name: Install dependencies
-        run: sudo apt-get install faketime libscope-guard-perl libtest-tcp-perl
+        run: sudo apt-get install faketime libscope-guard-perl libtest-tcp-perl libevent-dev
 
       - name: CMake
         run: cmake .
