@@ -49,6 +49,7 @@
 
 #include <arpa/inet.h>
 #include <event2/event.h>
+#include <event2/listener.h>
 #include <linux/bpf.h>
 #include <linux/tcp.h>
 #include <stdio.h>
@@ -59,7 +60,6 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/time.h>
-//#include <netinet/tcp.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include "picotypes.h"
@@ -122,7 +122,7 @@ static void read_cb(evutil_socket_t fd, short what, void *arg);
 *
 * For servers, ideally one event_base per core.
 */
-void *tcpls_new(void *ctx, int is_server) {
+tcpls_t *tcpls_new(void *ctx, int is_server) {
   ptls_t *tls;
   ptls_context_t *ptls_ctx = (ptls_context_t *) ctx;
   tcpls_t *tcpls  = malloc(sizeof(*tcpls));
@@ -170,7 +170,11 @@ void *tcpls_new(void *ctx, int is_server) {
   return tcpls;
 }
 
-void tcpls_set_event_base(tcpls_t *tcpls, struct event_base *base) {
+void tcpls_dispatch(tcpls_event_base_t *base) {
+  event_base_dispatch(base);
+}
+
+void tcpls_set_event_base(tcpls_t *tcpls, tcpls_event_base_t *base) {
   tcpls->tls->ctx->base = base;
 }
 
@@ -500,6 +504,7 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
               datacb->transportid = con->this_transportid;
               datacb->tcpls = tcpls;
               con->datareadcb = datacb;
+              evutil_make_socket_nonblocking(con->socket);
               con->ev_read = event_new(tcpls->tls->ctx->base, con->socket,
                   EV_READ|EV_PERSIST, read_cb, datacb);
               /*event_priority_set(con->ev_read, 1);*/
@@ -736,6 +741,7 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
         tcpls->cookies->size -= 1;
         /* if this is a async tcpls, add the event */
         if (tls->ctx->is_async) {
+          evutil_make_socket_nonblocking(con->socket);
           event_add(con->ev_read, NULL);
         }
       }
@@ -792,6 +798,7 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
     }
     con->state = JOINED;
     if (tls->ctx->is_async) {
+      evutil_make_socket_nonblocking(con->socket);
       event_add(con->ev_read, NULL);
     }
   }
@@ -805,6 +812,30 @@ Exit:
   }
   ptls_buffer_dispose(&sendbuf);
   return -1;
+}
+
+static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd,
+    struct sockaddr *address, int socklen, void *arg) {
+  tcpls_do_accept_cb cbfunc = (tcpls_do_accept_cb) arg;
+  cbfunc(fd, address, socklen);
+}
+
+int tpcls_setup_listeners(ptls_context_t *ctx, tcpls_event_base_t *base, struct
+    sockaddr_storage *ss, int sslen, tcpls_do_accept_cb cbfunc, void *ptr, int backlog) {
+  if (!ctx->is_async)
+    return -1;
+  ctx->listeners = malloc(sizeof(struct evconnlistener *) * sslen);
+  int salen;
+  for (int i = 0; i < sslen; i++) {
+    if (ss[i].ss_family == AF_INET)
+      salen = sizeof(struct sockaddr_in);
+    else
+      salen = sizeof(struct sockaddr_in6);
+    ctx->listeners[i] = evconnlistener_new_bind(base, accept_conn_cb, cbfunc,
+        LEV_OPT_CLOSE_ON_EXEC|LEV_OPT_REUSEABLE, backlog, (struct sockaddr*)
+        &ss[i], salen);
+  }
+  return 0;
 }
 
 /**
@@ -900,6 +931,7 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
         datacb->transportid = newconn.this_transportid;
         datacb->tcpls = tcpls;
         newconn.datareadcb = datacb;
+        evutil_make_socket_nonblocking(newconn.socket);
         newconn.ev_read = event_new(tcpls->tls->ctx->base, newconn.socket,
             EV_READ|EV_PERSIST, read_cb, datacb);
         /*event_priority_set(newconn.ev_read, 1);*/
@@ -938,6 +970,7 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
         datacb->transportid = newconn.this_transportid;
         datacb->tcpls = tcpls;
         newconn.datareadcb = datacb;
+        evutil_make_socket_nonblocking(newconn.socket);
         newconn.ev_read = event_new(tcpls->tls->ctx->base, newconn.socket,
             EV_READ|EV_PERSIST, read_cb, datacb);
         /*event_priority_set(newconn.ev_read, 1);*/

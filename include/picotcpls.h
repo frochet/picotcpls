@@ -374,12 +374,17 @@ struct st_ptls_record_t;
 
 /** API exposed to the application */
 
-void *tcpls_new();
+tcpls_t *tcpls_new();
+
+void tcpls_dispatch(tcpls_event_base_t *base);
 
 int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
     struct timeval *timeout);
 
 int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties);
+
+int tcpls_setup_listeners(ptls_context_t *ctx, tcpls_event_base_t *base, struct
+    sockaddr_storage *ss, int sslen, tcpls_do_accept_cb cbfunc, void *ptr, int backlog);
 
 int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transportid);
 

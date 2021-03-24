@@ -1,6 +1,7 @@
 #ifndef picotypes_h
 #define picotypes_h
 #include <stdint.h>
+#include <event2/event.h>
 /** Main common taypes */
 
 typedef struct st_tcpls_options_t tcpls_options_t;
@@ -16,4 +17,6 @@ typedef struct st_tcpls_record_fifo_t tcpls_record_fifo_t;
 typedef struct st_list_t list_t;
 typedef struct st_ptls_handshake_properties_t ptls_handshake_properties_t;
 typedef struct st_tcpls_buffer tcpls_buffer_t;
+typedef struct event_base tcpls_event_base_t;
+typedef void (*tcpls_do_accept_cb)(int, struct sockaddr*, int);
 #endif

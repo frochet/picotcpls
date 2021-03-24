@@ -32,6 +32,7 @@ extern "C" {
 
 #include <assert.h>
 #include <inttypes.h>
+#include <event2/listener.h>
 #include <string.h>
 #include <sys/types.h>
 #include <stddef.h>
@@ -899,6 +900,10 @@ typedef struct st_ptls_log_event_t {
       * Read callback function
       */
      void (*read_cb)(tcpls_t *tcpls, int transportid, int is_timeout);
+
+     struct evconnlistener **listeners;
+
+     int listenerslen;
   };
 
   typedef struct st_ptls_raw_extension_t {

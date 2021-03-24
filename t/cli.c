@@ -112,6 +112,11 @@ static void conn_tcpls_free(list_t *conn_to_tcpls) {
   }
 }
 
+struct st_socktrid {
+  int socket;
+  int transportid;
+};
+
 struct cli_data {
   list_t *socklist;
   list_t *streamlist;
@@ -290,17 +295,25 @@ static int handle_client_connection_event(tcpls_t *tcpls, tcpls_event_t event,
     case CONN_FAILED:
       fprintf(stderr, "Received a CONN_FAILED on socket %d\n", socket);
       break;
-    case CONN_CLOSED:
-      fprintf(stderr, "Received a CONN_CLOSED; marking socket %d to remove\n", socket);
-      list_add(data->socktoremove, &socket);
-      break;
-    case CONN_OPENED:
-      fprintf(stderr, "Received a CONN_OPENED; adding the socket %d\n", socket);
-      list_add(data->socklist, &socket);
-      /*If we get a CON_CLOSED, then a CON_OPENED on the same sock value, we
-       * need to remove the socket from the socktoremove list xD*/
-      list_remove(data->socktoremove, &socket);
-      break;
+    case CONN_CLOSED: {
+        fprintf(stderr, "Received a CONN_CLOSED; marking socket %d to remove\n", socket);
+        struct st_socktrid elem;
+        elem.socket = socket;
+        elem.transportid = transportid;
+        list_add(data->socktoremove, &elem);
+        break;
+       }
+    case CONN_OPENED: {
+        fprintf(stderr, "Received a CONN_OPENED; adding the socket %d\n", socket);
+        struct st_socktrid elem;
+        elem.socket = socket;
+        elem.transportid = transportid;
+        list_add(data->socklist, &elem);
+        /*If we get a CON_CLOSED, then a CON_OPENED on the same sock value, we
+         * need to remove the socket from the socktoremove list xD*/
+        list_remove(data->socktoremove, &elem);
+        break;
+      }
     default: break;
   }
   return 0;
@@ -396,7 +409,8 @@ static void tcpls_add_ips(tcpls_t *tcpls, struct sockaddr_storage *sa_our,
       tcpls_add_v6(tcpls->tls, (struct sockaddr_in6*)&sa_peer[i], 0, 0, 0);
   }
 }
-static int handle_tcpls_read(tcpls_t *tcpls, int socket, tcpls_buffer_t *buf, list_t *streamlist, list_t *conn_tcpls) {
+static int handle_tcpls_read(tcpls_t *tcpls, int socket, int transportid,
+    tcpls_buffer_t *buf, list_t *streamlist, list_t *conn_tcpls) {
 
   int ret;
   if (!ptls_handshake_is_complete(tcpls->tls) && tcpls->tls->state <
@@ -456,7 +470,7 @@ static int handle_tcpls_read(tcpls_t *tcpls, int socket, tcpls_buffer_t *buf, li
       }
     }
   }
-  while ((ret = tcpls_receive(tcpls->tls, buf, &timeout)) == TCPLS_HOLD_DATA_TO_READ)
+  while ((ret = tcpls_receive(tcpls, buf, transportid, &timeout)) == TCPLS_HOLD_DATA_TO_READ)
     ;
   if (ret < 0) {
     fprintf(stderr, "tcpls_receive returned %d\n",ret);
@@ -506,7 +520,7 @@ static int handle_tcpls_write(tcpls_t *tcpls, struct conn_to_tcpls *conntotcpls,
     while ((ioret = read(*inputfd, buf, block_size)) == -1 && errno == EINTR)
       ;
   if (ioret > 0) {
-    if((ret = tcpls_send(tcpls->tls, conntotcpls->streamid, buf, ioret)) != 0) {
+    if((ret = tcpls_send(tcpls, conntotcpls->streamid, buf, ioret)) != 0) {
       fprintf(stderr, "tcpls_send returned %d for sending on streamid %u\n",
           ret, conntotcpls->streamid);
       /*close(inputfd);*/
@@ -538,7 +552,7 @@ static int handle_server_zero_rtt_test(list_t *conn_tcpls, fd_set *readset) {
   for (int i = 0; i < conn_tcpls->size; i++) {
     struct conn_to_tcpls *conn = list_get(conn_tcpls, i);
     if (FD_ISSET(conn->conn_fd, readset) && conn->state >= CONNECTED) {
-      ret = handle_tcpls_read(conn->tcpls, conn->conn_fd, conn->recvbuf, NULL, conn_tcpls);
+      ret = handle_tcpls_read(conn->tcpls, conn->conn_fd, conn->transportid, conn->recvbuf, NULL, conn_tcpls);
       if (ptls_handshake_is_complete(conn->tcpls->tls)){
         return 0;
       }
@@ -552,7 +566,7 @@ static int handle_server_perf_test(struct conn_to_tcpls *conn, fd_set
     *readset, fd_set *writeset, uint8_t *data, int datalen, list_t *conn_tcpls) {
   int ret = 1;
   if (FD_ISSET(conn->conn_fd, readset) && conn->state >= CONNECTED) {
-    ret = handle_tcpls_read(conn->tcpls, conn->conn_fd, conn->recvbuf, NULL, conn_tcpls);
+    ret = handle_tcpls_read(conn->tcpls, conn->conn_fd, conn->transportid, conn->recvbuf, NULL, conn_tcpls);
     /** /!\ does not work if we multiplex streams! /!\ */
     ptls_buffer_t *buf = tcpls_get_stream_buffer(conn->recvbuf, conn->streamid);
     if (buf)
@@ -567,7 +581,7 @@ static int handle_server_perf_test(struct conn_to_tcpls *conn, fd_set
   }
   if (FD_ISSET(conn->conn_fd, writeset) && conn->wants_to_write) {
     /** we flush data to tcpls */
-    if((ret = tcpls_send(conn->tcpls->tls, conn->streamid, data, datalen)) != TCPLS_OK) {
+    if((ret = tcpls_send(conn->tcpls, conn->streamid, data, datalen)) != TCPLS_OK) {
       if (ret == TCPLS_HOLD_DATA_TO_SEND) {
         /** tell to devise datalen per 2 */
         return -2;
@@ -585,7 +599,7 @@ static int handle_server_multipath_test(list_t *conn_tcpls, integration_test_t t
   for (int i = 0; i < conn_tcpls->size; i++) {
     struct conn_to_tcpls *conn = list_get(conn_tcpls, i);
     if (FD_ISSET(conn->conn_fd, readset) && conn->state >= CONNECTED) {
-      ret = handle_tcpls_read(conn->tcpls, conn->conn_fd, conn->recvbuf, NULL, conn_tcpls);
+      ret = handle_tcpls_read(conn->tcpls, conn->conn_fd, conn->transportid, conn->recvbuf, NULL, conn_tcpls);
       if (ret == -2) {
         fprintf(stderr, "Setting socket %d as primary\n", conn->conn_fd);
         conn->is_primary = 1;
@@ -619,7 +633,7 @@ static int handle_client_perf_test(tcpls_t *tcpls, struct cli_data *data) {
   struct timespec start_time;
   clock_gettime(CLOCK_MONOTONIC, &start_time);
   tcpls_buffer_t *recvbuf = tcpls_stream_buffers_new(tcpls, 1);
-  if (handle_tcpls_read(tcpls, 0, recvbuf, data->streamlist, NULL) < 0) {
+  if (handle_tcpls_read(tcpls, 0, 0, recvbuf, data->streamlist, NULL) < 0) {
     ret = -1;
     goto Exit;
   }
@@ -628,10 +642,10 @@ static int handle_client_perf_test(tcpls_t *tcpls, struct cli_data *data) {
 
   while (1) {
     /*cleanup*/
-    int *socket;
+    struct st_socktrid *elem;
     for (int i = 0; i < data->socktoremove->size; i++) {
-      socket = list_get(data->socktoremove, i);
-      list_remove(data->socklist, socket);
+      elem = list_get(data->socktoremove, i);
+      list_remove(data->socklist, elem);
     }
     list_clean(data->socktoremove);
     if (data->socklist->size == 0)
@@ -642,18 +656,18 @@ static int handle_client_perf_test(tcpls_t *tcpls, struct cli_data *data) {
       FD_ZERO(&writefds);
       FD_ZERO(&exceptfds);
       for (int i = 0; i < data->socklist->size; i++) {
-        socket = list_get(data->socklist, i);
-        FD_SET(*socket, &readfds);
-        if (maxfds <= *socket)
-          maxfds = *socket;
+        elem = list_get(data->socklist, i);
+        FD_SET(elem->socket, &readfds);
+        if (maxfds <= elem->socket)
+          maxfds = elem->socket;
       }
     } while (select(maxfds+1, &readfds, &writefds, &exceptfds, NULL) == -1);
 
     int ret;
     for (int i = 0; i < data->socklist->size; i++) {
-      socket = list_get(data->socklist, i);
-      if (FD_ISSET(*socket, &readfds)) {
-        if ((ret = handle_tcpls_read(tcpls, *socket, recvbuf, data->streamlist, NULL)) < 0) {
+      elem = list_get(data->socklist, i);
+      if (FD_ISSET(elem->socket, &readfds)) {
+        if ((ret = handle_tcpls_read(tcpls, elem->socket, elem->transportid, recvbuf, data->streamlist, NULL)) < 0) {
           fprintf(stderr, "handle_tcpls_read returned %d\n",ret);
           break;
         }
@@ -686,7 +700,7 @@ static int handle_client_transfer_test(tcpls_t *tcpls, int test, struct cli_data
   tcpls_buffer_t *recvbuf = tcpls_aggr_buffer_new(tcpls);
   FILE *mtest = fopen("multipath_test.data", "w");
   assert(mtest);
-  if (handle_tcpls_read(tcpls, 0, recvbuf, data->streamlist, NULL) < 0) {
+  if (handle_tcpls_read(tcpls, 0, 0, recvbuf, data->streamlist, NULL) < 0) {
     ret = -1;
     goto Exit;
   }
@@ -707,10 +721,10 @@ static int handle_client_transfer_test(tcpls_t *tcpls, int test, struct cli_data
 
   while (1) {
     /*cleanup*/
-    int *socket;
+    struct st_socktrid *elem;
     for (int i = 0; i < data->socktoremove->size; i++) {
-      socket = list_get(data->socktoremove, i);
-      list_remove(data->socklist, socket);
+      elem = list_get(data->socktoremove, i);
+      list_remove(data->socklist, elem);
     }
     list_clean(data->socktoremove);
     if (data->socklist->size == 0)
@@ -721,10 +735,10 @@ static int handle_client_transfer_test(tcpls_t *tcpls, int test, struct cli_data
       FD_ZERO(&writefds);
       FD_ZERO(&exceptfds);
       for (int i = 0; i < data->socklist->size; i++) {
-        socket = list_get(data->socklist, i);
-        FD_SET(*socket, &readfds);
-        if (maxfds <= *socket)
-          maxfds = *socket;
+        elem = list_get(data->socklist, i);
+        FD_SET(elem->socket, &readfds);
+        if (maxfds <= elem->socket)
+          maxfds = elem->socket;
       }
       timeout.tv_sec = 3600;
       timeout.tv_usec = 0;
@@ -732,9 +746,10 @@ static int handle_client_transfer_test(tcpls_t *tcpls, int test, struct cli_data
 
     int ret;
     for (int i = 0; i < data->socklist->size; i++) {
-      socket = list_get(data->socklist, i);
-      if (FD_ISSET(*socket, &readfds)) {
-        if ((ret = handle_tcpls_read(tcpls, *socket, recvbuf, data->streamlist, NULL)) < 0) {
+      elem = list_get(data->socklist, i);
+      if (FD_ISSET(elem->socket, &readfds)) {
+        if ((ret = handle_tcpls_read(tcpls, elem->socket, elem->transportid,
+                recvbuf, data->streamlist, NULL)) < 0) {
           fprintf(stderr, "handle_tcpls_read returned %d\n",ret);
           break;
         }
@@ -748,10 +763,10 @@ static int handle_client_transfer_test(tcpls_t *tcpls, int test, struct cli_data
           struct sockaddr_storage peer_sockaddr;
           struct sockaddr_storage ss;
           socklen_t sslen = sizeof(struct sockaddr_storage);
-          if (getsockname(*socket, (struct sockaddr *) &ss, &sslen) < 0) {
+          if (getsockname(elem->socket, (struct sockaddr *) &ss, &sslen) < 0) {
             perror("getsockname(2) failed");
           }
-          if (getpeername(*socket, (struct sockaddr *) &peer_sockaddr, &sslen) < 0) {
+          if (getpeername(elem->socket, (struct sockaddr *) &peer_sockaddr, &sslen) < 0) {
             perror("getpeername(2) failed");
           }
           char buf_ipsrc[INET6_ADDRSTRLEN], buf_ipdest[INET6_ADDRSTRLEN];
@@ -1426,8 +1441,8 @@ static int run_client(struct sockaddr_storage *sa_our, struct sockaddr_storage
   int fd;
 
   hsprop->client.esni_keys = resolve_esni_keys(server_name);
-  list_t *socklist = new_list(sizeof(int), 2);
-  list_t *socktoremove = new_list(sizeof(int), 2);
+  list_t *socklist = new_list(sizeof(struct st_socktrid), 2);
+  list_t *socktoremove = new_list(sizeof(struct st_socktrid), 2);
   list_t *streamlist = new_list(sizeof(tcpls_stream_t), 2);
   struct cli_data data = {NULL};
   data.socklist = socklist;
