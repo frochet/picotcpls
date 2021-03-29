@@ -886,24 +886,6 @@ typedef struct st_ptls_log_event_t {
 
     /** if enabled, tcpls proposes an asyncronous interface to face the raw api */
     unsigned is_async : 1;
-
-    /**
-     * The event base if used in async mode
-     */
-     struct event_base *base;
-
-     /**
-      * Write callback function
-      */
-     void (*write_cb)(tcpls_t *tcpls, streamid_t streamid, int is_timeout);
-     /**
-      * Read callback function
-      */
-     void (*read_cb)(tcpls_t *tcpls, int transportid, int is_timeout);
-
-     struct evconnlistener **listeners;
-
-     int listenerslen;
   };
 
   typedef struct st_ptls_raw_extension_t {

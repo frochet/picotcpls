@@ -109,6 +109,17 @@ struct st_read_data_cb {
   tcpls_t *tcpls;
 };
 
+struct st_accept_cb_arg {
+  tcpls_do_accept_cb cbfunc;
+  void *ptr;
+};
+
+struct st_tcpls_event_base {
+  struct event_base *base;
+  struct evconnlistener **listeners;
+  struct st_accept_cb_arg *cb;
+};
+
 
 typedef struct st_connect_info_t {
   tcpls_tcp_state_t state; /* Connection state */
@@ -365,6 +376,22 @@ struct st_tcpls_t {
    * options
    */
   unsigned tcpls_options_confirmed : 1;
+
+  tcpls_event_base_t *base;
+  /**
+   * Write callback function
+   */
+  void (*write_cb)(tcpls_t *tcpls, streamid_t streamid, int is_timeout, void
+      *arg);
+  /**
+   * Read callback function
+   */
+  void (*read_cb)(tcpls_t *tcpls, int transportid, int is_timeout, void *arg);
+
+  void *read_cb_arg;
+
+  void *write_cb_arg;
+
 };
 
 struct st_ptls_record_t;
@@ -376,7 +403,16 @@ struct st_ptls_record_t;
 
 tcpls_t *tcpls_new();
 
+tcpls_event_base_t *tcpls_event_base_new(void);
+
 void tcpls_dispatch(tcpls_event_base_t *base);
+
+int tcpls_event_base_exit(tcpls_event_base_t *base, const struct timeval *tv);
+
+int tcpls_event_base_break(tcpls_event_base_t *base);
+
+void tcpls_set_event_base(tcpls_t *tcpls, tcpls_event_base_t *base, void
+    *read_cb_arg, void *write_cb_arg);
 
 int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
     struct timeval *timeout);
@@ -384,9 +420,11 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
 int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties);
 
 int tcpls_setup_listeners(ptls_context_t *ctx, tcpls_event_base_t *base, struct
-    sockaddr_storage *ss, int sslen, tcpls_do_accept_cb cbfunc, void *ptr, int backlog);
+    sockaddr_storage *ss, int sslen, tcpls_do_accept_cb cbfunc, void *ptr, int
+    backlog);
 
-int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transportid);
+int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t
+    transportid);
 
 int tcpls_add_v4(ptls_t *tls, struct sockaddr_in *addr, int is_primary, int
     settopeer, int is_ours);
@@ -394,7 +432,8 @@ int tcpls_add_v4(ptls_t *tls, struct sockaddr_in *addr, int is_primary, int
 int tcpls_add_v6(ptls_t *tls, struct sockaddr_in6 *addr, int is_primary, int
     settopeer, int is_ours);
 
-uint32_t tcpls_stream_new(ptls_t *tls, struct sockaddr *src, struct sockaddr *addr);
+uint32_t tcpls_stream_new(ptls_t *tls, struct sockaddr *src, struct sockaddr
+    *addr);
 
 int tcpls_streams_attach(ptls_t *tls, streamid_t streamid, int sendnow);
 
@@ -412,7 +451,7 @@ int tcpls_send(tcpls_t *tls, streamid_t streamid, const void *input, size_t nbyt
  * for the async mode only; add an event in the eventloop for streamid
  */
 
-void tcpls_streamid_want_to_send(tcpls_t *tcpls, streamid_t streamid);
+void tcpls_streamid_wants_to_send(tcpls_t *tcpls, streamid_t streamid);
 
 /**
  * Eventually read bytes and pu them in input -- Make sure the socket is
@@ -429,6 +468,8 @@ int tcpls_set_bpf_scheduler(tcpls_t *tcpls, const uint8_t *bpf_prog_bytecode,
 int tcpls_send_tcpoption(tcpls_t *tcpls, int transportid, tcpls_enum_t type, int sendnow);
 
 void tcpls_free(tcpls_t *tcpls);
+
+void tcpls_event_base_free(tcpls_event_base_t *base);
 
 /*============================================================================*/
 /** Internal to picotls */

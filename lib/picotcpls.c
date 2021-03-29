@@ -171,11 +171,37 @@ tcpls_t *tcpls_new(void *ctx, int is_server) {
 }
 
 void tcpls_dispatch(tcpls_event_base_t *base) {
-  event_base_dispatch(base);
+  event_base_dispatch(base->base);
 }
 
-void tcpls_set_event_base(tcpls_t *tcpls, tcpls_event_base_t *base) {
-  tcpls->tls->ctx->base = base;
+/**
+ * Tell to exit when timer tv fires. Still run the callback of all _active_ event before exiting.
+ *
+ * if tv is NULL, then it behaves like the timer fired right away.
+ */
+int tcpls_event_base_exit(tcpls_event_base_t *base, const struct timeval *tv) {
+  return event_base_loopexit(base->base, tv);
+}
+
+/**
+ * Exit immediatly
+ */
+int tcpls_event_base_break(tcpls_event_base_t *base) {
+  return event_base_loopbreak(base->base);
+}
+
+tcpls_event_base_t *tcpls_event_base_new() {
+  tcpls_event_base_t *base = malloc(sizeof(*base));
+  memset(base, 0, sizeof(*base));
+  base->base = event_base_new();
+  return base;
+}
+
+
+void tcpls_set_event_base(tcpls_t *tcpls, tcpls_event_base_t *base, void *read_cb_arg, void *write_cb_arg) {
+  tcpls->base = base;
+  tcpls->read_cb_arg = read_cb_arg;
+  tcpls->write_cb_arg = write_cb_arg;
 }
 
 /**
@@ -505,7 +531,7 @@ int tcpls_connect(ptls_t *tls, struct sockaddr *src, struct sockaddr *dest,
               datacb->tcpls = tcpls;
               con->datareadcb = datacb;
               evutil_make_socket_nonblocking(con->socket);
-              con->ev_read = event_new(tcpls->tls->ctx->base, con->socket,
+              con->ev_read = event_new(tcpls->base->base, con->socket,
                   EV_READ|EV_PERSIST, read_cb, datacb);
               /*event_priority_set(con->ev_read, 1);*/
               // Add the event after the handshake
@@ -574,7 +600,7 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
         datacb->transportid = con->this_transportid;
         datacb->tcpls = tcpls;
         con->datareadcb = datacb;
-        con->ev_read = event_new(tcpls->tls->ctx->base, con->socket, EV_READ|EV_PERSIST, read_cb, datacb);
+        con->ev_read = event_new(tcpls->base->base, con->socket, EV_READ|EV_PERSIST, read_cb, datacb);
         /*event_priority_set(con->ev_read, 1);*/
       }
       if (ptls_buffer_reserve(coninfo.buffrag, 5) != 0)
@@ -816,22 +842,27 @@ Exit:
 
 static void accept_conn_cb(struct evconnlistener *listener, evutil_socket_t fd,
     struct sockaddr *address, int socklen, void *arg) {
-  tcpls_do_accept_cb cbfunc = (tcpls_do_accept_cb) arg;
-  cbfunc(fd, address, socklen);
+  struct st_accept_cb_arg *cb = (struct st_accept_cb_arg *) arg;
+  tcpls_do_accept_cb cbfunc = (tcpls_do_accept_cb) cb->cbfunc;
+  void *ptr = cb->ptr;
+  cbfunc(fd, address, socklen, ptr);
 }
 
 int tpcls_setup_listeners(ptls_context_t *ctx, tcpls_event_base_t *base, struct
     sockaddr_storage *ss, int sslen, tcpls_do_accept_cb cbfunc, void *ptr, int backlog) {
   if (!ctx->is_async)
     return -1;
-  ctx->listeners = malloc(sizeof(struct evconnlistener *) * sslen);
+  base->listeners = malloc(sizeof(struct evconnlistener *) * sslen);
+  base->cb = malloc(sizeof(struct st_accept_cb_arg));
+  base->cb->cbfunc = cbfunc;
+  base->cb->ptr = ptr;
   int salen;
   for (int i = 0; i < sslen; i++) {
     if (ss[i].ss_family == AF_INET)
       salen = sizeof(struct sockaddr_in);
     else
       salen = sizeof(struct sockaddr_in6);
-    ctx->listeners[i] = evconnlistener_new_bind(base, accept_conn_cb, cbfunc,
+    base->listeners[i] = evconnlistener_new_bind(base->base, accept_conn_cb, base->cb,
         LEV_OPT_CLOSE_ON_EXEC|LEV_OPT_REUSEABLE, backlog, (struct sockaddr*)
         &ss[i], salen);
   }
@@ -932,7 +963,7 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
         datacb->tcpls = tcpls;
         newconn.datareadcb = datacb;
         evutil_make_socket_nonblocking(newconn.socket);
-        newconn.ev_read = event_new(tcpls->tls->ctx->base, newconn.socket,
+        newconn.ev_read = event_new(tcpls->base->base, newconn.socket,
             EV_READ|EV_PERSIST, read_cb, datacb);
         /*event_priority_set(newconn.ev_read, 1);*/
       }
@@ -971,7 +1002,7 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
         datacb->tcpls = tcpls;
         newconn.datareadcb = datacb;
         evutil_make_socket_nonblocking(newconn.socket);
-        newconn.ev_read = event_new(tcpls->tls->ctx->base, newconn.socket,
+        newconn.ev_read = event_new(tcpls->base->base, newconn.socket,
             EV_READ|EV_PERSIST, read_cb, datacb);
         /*event_priority_set(newconn.ev_read, 1);*/
       }
@@ -1390,7 +1421,7 @@ int tcpls_send(tcpls_t *tcpls, streamid_t streamid, const void *input, size_t nb
 /**
  * Add the event to the application's loop
  */
-void tcpls_streamid_want_to_send(tcpls_t *tcpls, streamid_t streamid) {
+void tcpls_streamid_wants_to_send(tcpls_t *tcpls, streamid_t streamid) {
   if (!tcpls->tls->ctx->is_async)
     return;
   tcpls_stream_t *stream = stream_get(tcpls, streamid);
@@ -1409,7 +1440,7 @@ static void write_cb(evutil_socket_t fd, short what, void *arg) {
   int is_timeout = 0;
   if (what&EV_TIMEOUT)
     is_timeout = 1;
-  tcpls->tls->ctx->write_cb(tcpls, datacb->streamid, is_timeout);
+  tcpls->write_cb(tcpls, datacb->streamid, is_timeout, tcpls->write_cb_arg);
 }
 
 /**
@@ -1421,7 +1452,7 @@ static void read_cb(evutil_socket_t fd, short what, void *arg) {
   int is_timeout = 0;
   if (what&EV_TIMEOUT)
     is_timeout = 1;
-  tcpls->tls->ctx->read_cb(tcpls, datacb->transportid, is_timeout);
+  tcpls->read_cb(tcpls, datacb->transportid, is_timeout, tcpls->read_cb_arg);
 }
 
 /**
@@ -3455,9 +3486,9 @@ static tcpls_stream_t *stream_new(ptls_t *tls, streamid_t streamid,
       return NULL;
     stream->datacb_internal->streamid = stream->streamid;
     stream->datacb_internal->tcpls = tcpls;
-    stream->ev_internal_write = event_new(tcpls->tls->ctx->base, con->socket, EV_WRITE,
+    stream->ev_internal_write = event_new(tcpls->base->base, con->socket, EV_WRITE,
         tcpls_internal_write, stream->datacb_internal);
-    stream->ev_stream_want_to_send = event_new(tcpls->tls->ctx->base, con->socket,
+    stream->ev_stream_want_to_send = event_new(tcpls->base->base, con->socket,
         EV_WRITE, write_cb, stream->datacb_internal);
     /** this has highest priority, especially over app-level sends event 
      *  XXX Do something smarter, with priorities per-connections */
@@ -3698,6 +3729,16 @@ static void connection_close(tcpls_t *tcpls, connect_info_t *con) {
     event_free(con->ev_read);
     free(con->datareadcb);
   }
+}
+
+void tcpls_event_base_free(tcpls_event_base_t *base) {
+  if (!base)
+    return;
+  event_base_free(base->base);
+  if (base->listeners)
+    free(base->listeners);
+  if (base->cb)
+    free(base->cb);
 }
 
 void tcpls_free(tcpls_t *tcpls) {
