@@ -114,7 +114,9 @@ static void gcm_basic(void)
                                            0x77, 0x08, 0xa9, 0x60, 0x17, 0x73, 0xc5, 0x07, 0xf3, 0x04, 0xc9, 0x3f, 0x67, 0x4d, 0x12,
                                            0xa1, 0x02, 0x93, 0xc2, 0x3c, 0xd3, 0xf8, 0x59, 0x33, 0xd5, 0x01, 0xc3, 0xbb, 0xaa, 0xe6,
                                            0x3f, 0xbb, 0x23, 0x66, 0x94, 0x26, 0x28, 0x43, 0xa5, 0xfd, 0x2f};
-        ptls_aead_context_t *aead = ptls_aead_new_direct(&ptls_fusion_aes128gcm, 0, key, iv);
+        ptls_context_t ctx = {NULL};
+        ptls_t tls = {&ctx};
+        ptls_aead_context_t *aead = ptls_aead_new_direct(&tls, &ptls_fusion_aes128gcm, 0, key, iv);
         uint8_t encrypted[sizeof(plaintext) + 16], decrypted[sizeof(plaintext)];
         ptls_aead_encrypt(aead, encrypted, plaintext, sizeof(plaintext), 0, aad, sizeof(aad));
         ok(memcmp(expected, encrypted, sizeof(plaintext)) == 0);
@@ -209,7 +211,9 @@ static void gcm_iv96(void)
                                        0xa1, 0x02, 0x93, 0xc2, 0x3c, 0xd3, 0xf8, 0x59, 0x33, 0xd5, 0x01, 0xc3, 0xbb, 0xaa, 0xe6,
                                        0x3f, 0xbb, 0x23, 0x66, 0x94, 0x26, 0x28, 0x43, 0xa5, 0xfd, 0x2f};
 
-    ptls_aead_context_t *aead = ptls_aead_new_direct(&ptls_fusion_aes128gcm, 0, key, iv);
+    ptls_context_t ctx = {NULL};
+    ptls_t tls = {&ctx};
+    ptls_aead_context_t *aead = ptls_aead_new_direct(&tls, &ptls_fusion_aes128gcm, 0, key, iv);
     uint8_t encrypted[sizeof(plaintext) + 16], decrypted[sizeof(plaintext)];
     uint8_t seq32[4] = {0, 1, 2, 3};
     uint8_t seq32_bad[4] = {0x89, 0xab, 0xcd, 0xef};
@@ -234,6 +238,8 @@ static void test_generated(int aes256, int iv96)
 {
     ptls_cipher_context_t *rand = ptls_cipher_new(&ptls_minicrypto_aes128ctr, 1, zero);
     ptls_cipher_init(rand, zero);
+    ptls_context_t ctx = {NULL};
+    ptls_t tls = {&ctx};
     int i;
 #ifdef _WINDOWS
     const int nb_runs = 1000;
@@ -263,7 +269,7 @@ static void test_generated(int aes256, int iv96)
 
         { /* check using fusion */
             ptls_aead_context_t *fusion =
-                ptls_aead_new_direct(aes256 ? &ptls_fusion_aes256gcm : &ptls_fusion_aes128gcm, 1, key, iv);
+                ptls_aead_new_direct(&tls, aes256 ? &ptls_fusion_aes256gcm : &ptls_fusion_aes128gcm, 1, key, iv);
             if (iv96) {
                 ptls_aead_xor_iv(fusion, seq32, sizeof(seq32));
             }
@@ -279,7 +285,7 @@ static void test_generated(int aes256, int iv96)
 
         { /* check that the encrypted text can be decrypted by OpenSSL */
             ptls_aead_context_t *mc =
-                ptls_aead_new_direct(aes256 ? &ptls_minicrypto_aes256gcm : &ptls_minicrypto_aes128gcm, 0, key, iv);
+                ptls_aead_new_direct(&tls, aes256 ? &ptls_minicrypto_aes256gcm : &ptls_minicrypto_aes128gcm, 0, key, iv);
             if (iv96) {
                 ptls_aead_xor_iv(mc, seq32, sizeof(seq32));
             }

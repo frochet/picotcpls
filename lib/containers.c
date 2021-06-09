@@ -141,6 +141,16 @@ void *list_get(list_t *list, int itemid) {
   return &list->items[list->itemsize*itemid];
 }
 
+int list_contain(list_t *list, void *item) {
+  if (list->size == 0)
+    return 0;
+  for (int i = 0; i < list->size; i++) {
+    if (!memcmp(&list->items[i*list->itemsize], item, list->itemsize) == 0)
+      return 1;
+  }
+  return 0;
+}
+
 /**
  * remove item  from the list if this item is inside, then move the items to keep
  * them continuous

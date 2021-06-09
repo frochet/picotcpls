@@ -337,6 +337,8 @@ struct st_tcpls_t {
    * options
    */
   unsigned tcpls_options_confirmed : 1;
+  /* used to initialize buffer size -- should be the aad size*/
+  int init_buf_reserve;
 };
 
 struct st_ptls_record_t;

@@ -423,6 +423,8 @@ typedef struct st_ptls_aead_supplementary_encryption_t {
 typedef struct st_ptls_aead_context_t {
     const struct st_ptls_aead_algorithm_t *algo;
     uint64_t seq;
+    streamid_t streamid;
+    unsigned extended_tls_header : 1;
     /* field above this line must not be altered by the crypto binding */
     void (*dispose_crypto)(struct st_ptls_aead_context_t *ctx);
     void (*do_xor_iv)(struct st_ptls_aead_context_t *ctx, const void * bytes, size_t len);
@@ -815,7 +817,9 @@ typedef struct st_ptls_log_event_t {
      */
     unsigned support_tcpls_options : 1;
 
-    
+    /** whether we add the TCPLS stream ID in the associated data */
+    unsigned extended_tls_header : 1;
+
     /**
      * If set to 1, ptls_receive would contain into its decrypted buffer any
      * decrypted record that is part of the tcpls session.
@@ -1047,6 +1051,7 @@ typedef struct st_ptls_log_event_t {
       uint8_t type;
       uint16_t version;
       size_t length;
+      streamid_t streamid;
       const uint8_t *fragment;
       uint64_t seq;
   };
@@ -1678,7 +1683,7 @@ static void ptls_cipher_encrypt(ptls_cipher_context_t *ctx, void *output, const 
  * @param secret the secret. The size must be the digest length of the hash algorithm
  * @return pointer to an AEAD context if successful, otherwise NULL
  */
-ptls_aead_context_t *ptls_aead_new(ptls_aead_algorithm_t *aead, ptls_hash_algorithm_t *hash, int is_enc, const void *secret,
+ptls_aead_context_t *ptls_aead_new(ptls_t *tls, ptls_aead_algorithm_t *aead, ptls_hash_algorithm_t *hash, int is_enc, const void *secret,
                                    const char *label_prefix);
 /**
  * instantiates an AEAD cipher given key and iv
@@ -1686,7 +1691,7 @@ ptls_aead_context_t *ptls_aead_new(ptls_aead_algorithm_t *aead, ptls_hash_algori
  * @param is_enc 1 if creating a context for encryption, 0 if creating a context for decryption
  * @return pointer to an AEAD context if successful, otherwise NULL
  */
-ptls_aead_context_t *ptls_aead_new_direct(ptls_aead_algorithm_t *aead, int is_enc, const void *key, const void *iv);
+ptls_aead_context_t *ptls_aead_new_direct(ptls_t *tls, ptls_aead_algorithm_t *aead, int is_enc, const void *key, const void *iv);
 /**
  * destroys an AEAD cipher context
  */

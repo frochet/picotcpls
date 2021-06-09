@@ -176,7 +176,7 @@ static double bench_mbps(uint64_t t, size_t l, size_t n)
 
 /* Measure one specific aead implementation
  */
-static int bench_run_aead(char *OS, char *HW, int basic_ref, uint64_t s0, const char *provider, const char *algo_name,
+static int bench_run_aead(ptls_t *tls, char *OS, char *HW, int basic_ref, uint64_t s0, const char *provider, const char *algo_name,
                           ptls_aead_algorithm_t *aead, ptls_hash_algorithm_t *hash, size_t n, size_t l, uint64_t *s)
 {
     int ret = 0;
@@ -213,8 +213,8 @@ static int bench_run_aead(char *OS, char *HW, int basic_ref, uint64_t s0, const 
     *s += s0;
 
     memset(secret, 'z', sizeof(secret));
-    e = ptls_aead_new(aead, hash, 1, secret, NULL);
-    d = ptls_aead_new(aead, hash, 0, secret, NULL);
+    e = ptls_aead_new(tls, aead, hash, 1, secret, NULL);
+    d = ptls_aead_new(tls, aead, hash, 0, secret, NULL);
 
     if (e == NULL || d == NULL) {
         ret = PTLS_ERROR_NO_MEMORY;
@@ -297,6 +297,8 @@ int main(int argc, char **argv)
     int basic_ref = bench_basic(&x);
     char OS[128];
     char HW[128];
+    ptls_context_t ctx = {NULL};
+    ptls_t placeholder = {&ctx};
 #ifndef _WINDOWS
     struct utsname uts;
 #endif
@@ -329,7 +331,7 @@ int main(int argc, char **argv)
 
     for (size_t i = 0; ret == 0 && i < nb_aead_list; i++) {
         if (aead_list[i].enabled_by_defaut || force_all_tests) {
-            ret = bench_run_aead(OS, HW, basic_ref, x, aead_list[i].provider, aead_list[i].algo_name, aead_list[i].aead,
+            ret = bench_run_aead(&placeholder, OS, HW, basic_ref, x, aead_list[i].provider, aead_list[i].algo_name, aead_list[i].aead,
                                  aead_list[i].hash, 1000, 16384, &s);
         }
     }

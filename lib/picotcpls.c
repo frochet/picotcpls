@@ -120,6 +120,10 @@ void *tcpls_new(void *ctx, int is_server) {
   ptls_t *tls;
   ptls_context_t *ptls_ctx = (ptls_context_t *) ctx;
   tcpls_t *tcpls  = malloc(sizeof(*tcpls));
+  if (ptls_ctx->extended_tls_header)
+    tcpls->init_buf_reserve = 9;
+  else
+    tcpls->init_buf_reserve = 5;
   if (tcpls == NULL)
     return NULL;
   memset(tcpls, 0, sizeof(*tcpls));
@@ -149,7 +153,7 @@ void *tcpls_new(void *ctx, int is_server) {
   tcpls->max_gap_size = PTLS_MAX_PLAINTEXT_RECORD_SIZE * 256;
   tcpls->buffrag = malloc(sizeof(*tcpls->buffrag));
   ptls_buffer_init(tcpls->buffrag, "", 0);
-  if (ptls_buffer_reserve(tcpls->buffrag, 5) != 0)
+  if (ptls_buffer_reserve(tcpls->buffrag, tcpls->init_buf_reserve) != 0)
     return NULL;
   tcpls->tls = tls;
   ptls_buffer_init(tcpls->sendbuf, "", 0);
@@ -539,7 +543,7 @@ int tcpls_handshake(ptls_t *tls, ptls_handshake_properties_t *properties) {
       coninfo.buffrag = malloc(sizeof(ptls_buffer_t));
       memset(coninfo.buffrag, 0, sizeof(ptls_buffer_t));
       ptls_buffer_init(coninfo.buffrag, "", 0);
-      if (ptls_buffer_reserve(coninfo.buffrag, 5) != 0)
+      if (ptls_buffer_reserve(coninfo.buffrag, tcpls->init_buf_reserve) != 0)
         return -1;
       if (properties->client.dest->ss_family == AF_INET) {
         coninfo.dest = get_addr_from_sockaddr(tcpls->v4_addr_llist, (struct
@@ -851,7 +855,7 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
       newconn.buffrag = malloc(sizeof(ptls_buffer_t));
       memset(newconn.buffrag, 0, sizeof(ptls_buffer_t));
       ptls_buffer_init(newconn.buffrag, "", 0);
-      if (ptls_buffer_reserve(newconn.buffrag, 5) != 0)
+      if (ptls_buffer_reserve(newconn.buffrag, tcpls->init_buf_reserve) != 0)
         return PTLS_ERROR_NO_MEMORY;
 
     }
@@ -879,7 +883,7 @@ int tcpls_accept(tcpls_t *tcpls, int socket, uint8_t *cookie, uint32_t transport
       newconn.buffrag = malloc(sizeof(ptls_buffer_t));
       memset(newconn.buffrag, 0, sizeof(ptls_buffer_t));
       ptls_buffer_init(newconn.buffrag, "", 0);
-      if (ptls_buffer_reserve(newconn.buffrag, 5) != 0)
+      if (ptls_buffer_reserve(newconn.buffrag, tcpls->init_buf_reserve) != 0)
         return PTLS_ERROR_NO_MEMORY;
     }
     else {
@@ -1018,7 +1022,7 @@ streamid_t tcpls_stream_new(ptls_t *tls, struct sockaddr *src, struct sockaddr *
     coninfo.buffrag = malloc(sizeof(ptls_buffer_t));
     memset(coninfo.buffrag, 0, sizeof(ptls_buffer_t));
     ptls_buffer_init(coninfo.buffrag, "", 0);
-    if (ptls_buffer_reserve(coninfo.buffrag, 5) != 0)
+    if (ptls_buffer_reserve(coninfo.buffrag, tcpls->init_buf_reserve) != 0)
       return -1;
     if (dest->sa_family == AF_INET) {
       /** NULL src means we use the default one */
@@ -1582,33 +1586,52 @@ static int try_decrypt_with_multistreams(tcpls_t *tcpls, const void *input,
     tcpls->buffrag->off = 0;
   }
   restore_buf = con->buffrag->off;
-  for (int i = 0; i < tcpls->streams->size && rret; i++) {
-    tcpls_stream_t *stream = list_get(tcpls->streams, i);
-    /* this is a stream attached to this connection */
-    if (con->this_transportid == stream->transportid) {
-      ptls_aead_context_t *remember_aead = tcpls->tls->traffic_protection.dec.aead;
-      // get the right  aead context matching the stream id
-      // This is done for compatibility with original PTLS's unit tests
-      /** We might have no stream attached server-side */
-      tcpls->tls->traffic_protection.dec.aead = stream->aead_dec;
-      tcpls->streamid_rcv = stream->streamid;
-      if (buf->bufkind == AGGREGATION)
-        decryptbuf = buf->decryptbuf;
-      else
-        decryptbuf = tcpls_get_stream_buffer(buf, stream->streamid);
-      int decryptoff = decryptbuf->off;
-      do {
+  /** we will know the stream that decrypts the record as part of the record's
+   * header */
+  if (tcpls->tls->ctx->extended_tls_header) {
+     ptls_aead_context_t *remember_aead = tcpls->tls->traffic_protection.dec.aead;
+     do {
         consumed = input_size - *input_off;
+        //decryptbuf should be NULL  -- we'll find it based on the record's
+        //streamid
         rret = ptls_receive(tcpls->tls, decryptbuf, con->buffrag, input + *input_off, &consumed);
-        *input_off += consumed;
-      } while (rret == 0 && *input_off < input_size);
-      tcpls->tls->traffic_protection.dec.aead = remember_aead;
-      /* Add this stream in the want-to-read list for the app */
-      if (decryptbuf->off-decryptoff > 0 && buf->bufkind == STREAMBASED)
-        list_add(buf->wtr_streams, &stream->streamid);
-      /*we need to restore buffrag if we had some and try with another streama*/
-      if (rret == PTLS_ALERT_BAD_RECORD_MAC && restore_buf && con->buffrag->capacity) {
-        con->buffrag->off = restore_buf;
+     } while (rret == 0 && *input_off < input_size);
+     tcpls->tls->traffic_protection.dec.aead = remember_aead;
+     if (rret == PTLS_ALERT_BAD_RECORD_MAC) {
+       fprintf(stderr, "BUG: BAD RECORD MAC");
+       return -1;
+     }
+  }
+  else {
+
+    for (int i = 0; i < tcpls->streams->size && rret; i++) {
+      tcpls_stream_t *stream = list_get(tcpls->streams, i);
+      /* this is a stream attached to this connection */
+      if (con->this_transportid == stream->transportid) {
+        ptls_aead_context_t *remember_aead = tcpls->tls->traffic_protection.dec.aead;
+        // get the right  aead context matching the stream id
+        // This is done for compatibility with original PTLS's unit tests
+        /** We might have no stream attached server-side */
+        tcpls->tls->traffic_protection.dec.aead = stream->aead_dec;
+        tcpls->streamid_rcv = stream->streamid;
+        if (buf->bufkind == AGGREGATION)
+          decryptbuf = buf->decryptbuf;
+        else
+          decryptbuf = tcpls_get_stream_buffer(buf, stream->streamid);
+        int decryptoff = decryptbuf->off;
+        do {
+          consumed = input_size - *input_off;
+          rret = ptls_receive(tcpls->tls, decryptbuf, con->buffrag, input + *input_off, &consumed);
+          *input_off += consumed;
+        } while (rret == 0 && *input_off < input_size);
+        tcpls->tls->traffic_protection.dec.aead = remember_aead;
+        /* Add this stream in the want-to-read list for the app */
+        if (decryptbuf->off-decryptoff > 0 && buf->bufkind == STREAMBASED)
+          list_add(buf->wtr_streams, &stream->streamid);
+        /*we need to restore buffrag if we had some and try with another streama*/
+        if (rret == PTLS_ALERT_BAD_RECORD_MAC && restore_buf && con->buffrag->capacity) {
+          con->buffrag->off = restore_buf;
+        }
       }
     }
   }
@@ -2823,6 +2846,9 @@ int get_tcpls_header_size(tcpls_t *tcpls, uint8_t type,  tcpls_enum_t tcpls_mess
       default: break;
     }
   }
+  /** if we add the stream id next to the record length */
+  if (tcpls->tls->ctx->extended_tls_header)
+    header_size += 4;
   return header_size;
 }
 
@@ -3208,10 +3234,11 @@ static int new_stream_derive_aead_context(ptls_t *tls, tcpls_stream_t *stream, i
   /** Derive enc iv */
   stream_derive_new_aead_iv(tls, iv, tls->cipher_suite->aead->iv_size, stream->offset, is_client_origin);
 
-  stream->aead_enc = ptls_aead_new_direct(tls->cipher_suite->aead,
+  stream->aead_enc = ptls_aead_new_direct(tls, tls->cipher_suite->aead,
       1, key, iv);
   if (!stream->aead_enc)
     return PTLS_ERROR_NO_MEMORY;
+  stream->aead_enc->streamid = stream->streamid;
   stream->aead_enc->seq = 0;
 
   if ((ret = ptls_hkdf_expand_label(tls->cipher_suite->hash, key,
@@ -3226,11 +3253,12 @@ static int new_stream_derive_aead_context(ptls_t *tls, tcpls_stream_t *stream, i
       return -1;
   /** Derive dec iv */
   stream_derive_new_aead_iv(tls, iv, tls->cipher_suite->aead->iv_size, stream->offset, is_client_origin);
-  stream->aead_dec = ptls_aead_new_direct(tls->cipher_suite->aead,
+  stream->aead_dec = ptls_aead_new_direct(tls, tls->cipher_suite->aead,
     0, key, iv);
   if (!stream->aead_dec)
     return PTLS_ERROR_NO_MEMORY;
   stream->aead_dec->seq = 0;
+  stream->aead_dec->streamid = stream->streamid;
 
   PTLS_DEBUGF(stderr, "Key: ");
   for (int i = 0; i < sizeof(key); i++) {
