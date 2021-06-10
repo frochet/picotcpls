@@ -417,4 +417,6 @@ int tcpls_failover_signal(tcpls_t *tcpls, ptls_buffer_t *sendbuf);
 
 void ptls_tcpls_options_free(tcpls_t *tcpls);
 
+tcpls_stream_t *stream_get(tcpls_t *tcpls, streamid_t streamid);
+
 #endif

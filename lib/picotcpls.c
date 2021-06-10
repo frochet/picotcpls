@@ -87,7 +87,6 @@ static tcpls_v4_addr_t *get_addr_from_sockaddr(tcpls_v4_addr_t *llist, struct so
 static tcpls_v6_addr_t *get_addr6_from_sockaddr(tcpls_v6_addr_t *llist, struct sockaddr_in6 *addr);
 static connect_info_t *get_primary_con_info(tcpls_t *tcpls);
 static int count_streams_from_transportid(tcpls_t *tcpls, int transportid);
-static tcpls_stream_t *stream_get(tcpls_t *tcpls, streamid_t streamid);
 static tcpls_stream_t *stream_helper_new(tcpls_t *tcpls, connect_info_t *con);
 static void check_stream_attach_have_been_sent(tcpls_t *tcpls, int consumed);
 static int new_stream_derive_aead_context(ptls_t *tls, tcpls_stream_t *stream, int is_client_origin);
@@ -120,13 +119,13 @@ void *tcpls_new(void *ctx, int is_server) {
   ptls_t *tls;
   ptls_context_t *ptls_ctx = (ptls_context_t *) ctx;
   tcpls_t *tcpls  = malloc(sizeof(*tcpls));
+  if (tcpls == NULL)
+    return NULL;
+  memset(tcpls, 0, sizeof(*tcpls));
   if (ptls_ctx->extended_tls_header)
     tcpls->init_buf_reserve = 9;
   else
     tcpls->init_buf_reserve = 5;
-  if (tcpls == NULL)
-    return NULL;
-  memset(tcpls, 0, sizeof(*tcpls));
   tcpls->cookies = new_list(COOKIE_LEN, 18);
   if (is_server) {
     tls = ptls_server_new(ptls_ctx);
@@ -1595,10 +1594,11 @@ static int try_decrypt_with_multistreams(tcpls_t *tcpls, const void *input,
         //decryptbuf should be NULL  -- we'll find it based on the record's
         //streamid
         rret = ptls_receive(tcpls->tls, decryptbuf, con->buffrag, input + *input_off, &consumed);
+        *input_off += consumed;
      } while (rret == 0 && *input_off < input_size);
      tcpls->tls->traffic_protection.dec.aead = remember_aead;
      if (rret == PTLS_ALERT_BAD_RECORD_MAC) {
-       fprintf(stderr, "BUG: BAD RECORD MAC");
+       fprintf(stderr, "BUG: BAD RECORD MAC\n");
        return -1;
      }
   }
@@ -2846,9 +2846,9 @@ int get_tcpls_header_size(tcpls_t *tcpls, uint8_t type,  tcpls_enum_t tcpls_mess
       default: break;
     }
   }
-  /** if we add the stream id next to the record length */
-  if (tcpls->tls->ctx->extended_tls_header)
-    header_size += 4;
+  /*[>* if we add the stream id next to the record length <]*/
+  /*if (tcpls->tls->ctx->extended_tls_header)*/
+    /*header_size += 4;*/
   return header_size;
 }
 
